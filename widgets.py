@@ -2,9 +2,10 @@ from PyQt6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QTextEdit, QDialogButtonBox,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
     QScrollArea, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox,
-    QRadioButton, QCompleter
+    QRadioButton, QCompleter, QSplitter
 )
-from PyQt6.QtCore import Qt, QProcess, QTimer, pyqtSignal, QStringListModel, QEvent, QObject
+from PyQt6.QtCore import Qt, QProcess, QTimer, pyqtSignal, QStringListModel, QEvent, QObject, QThread
+from PyQt6.QtGui import QShortcut, QKeySequence
 import sys
 import os
 from pathlib import Path
@@ -43,6 +44,183 @@ class _HistoryEventFilter(QObject):
                     self.model.setStringList(lst)
                     return True
         return False
+
+
+class _AIWorker(QObject):
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, api_key: str, user_text: str, script_path: str):
+        super().__init__()
+        self.api_key = api_key
+        self.user_text = user_text
+        self.script_path = script_path
+
+    def run(self):
+        try:
+            import urllib.request
+            import urllib.error
+            import json as _json
+            # Read script content (limit)
+            try:
+                with open(self.script_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    script = f.read()
+            except Exception as e:
+                script = f"<読み込みエラー: {e}>"
+            if len(script) > 100_000:
+                script = script[:100_000] + "\n... (truncated)"
+
+            messages = [
+                {"role": "system", "content": "You are a helpful coding assistant. Answer in Japanese unless asked otherwise."},
+                {"role": "user", "content": (
+                    "ユーザー入力:\n" + self.user_text.strip() +
+                    "\n\n選択中のスクリプトの内容（抜粋）:\n```python\n" + script + "\n```\n"
+                )},
+            ]
+            payload = {
+                "model": "gpt-5",
+                "messages": messages,
+            }
+            req = urllib.request.Request(
+                url="https://api.openai.com/v1/chat/completions",
+                data=_json.dumps(payload).encode('utf-8'),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = _json.loads(resp.read().decode('utf-8', errors='ignore'))
+            content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+            if not content:
+                content = _json.dumps(data, ensure_ascii=False, indent=2)
+            self.finished.emit(content)
+        except urllib.error.HTTPError as he:
+            try:
+                err = he.read().decode('utf-8', errors='ignore')
+            except Exception:
+                err = str(he)
+            self.error.emit(f"HTTPError: {he.code}\n{err}")
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class AIAssistantPanel(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.current_sid: int | None = None
+        self.current_path: str | None = None
+        self._thread: QThread | None = None
+        self._worker: _AIWorker | None = None
+
+        root = QVBoxLayout(self)
+        # Vertical splitter: top (input+send), bottom (output)
+        self.split = QSplitter(Qt.Orientation.Vertical)
+        root.addWidget(self.split, 1)
+
+        # Top (input area container) - splitter handle will appear above the send button
+        topw = QWidget()
+        top_layout = QVBoxLayout(topw)
+        top_layout.addWidget(QLabel("AIへ相談（入力して送信またはCtrl+Enter）"))
+        self.input = QTextEdit()
+        self.input.setPlaceholderText("質問や指示を入力...")
+        self.input.setAcceptRichText(False)
+        top_layout.addWidget(self.input, 1)
+
+        # Bottom (send + output container)
+        bottomw = QWidget()
+        bottom_layout = QVBoxLayout(bottomw)
+        ctrl = QHBoxLayout()
+        self.btn_send = QPushButton("送信")
+        ctrl.addStretch(1)
+        ctrl.addWidget(self.btn_send)
+        bottom_layout.addLayout(ctrl)
+        bottom_layout.addWidget(QLabel("回答"))
+        self.output = QTextEdit()
+        self.output.setReadOnly(True)
+        bottom_layout.addWidget(self.output, 1)
+
+        self.split.addWidget(topw)
+        self.split.addWidget(bottomw)
+        # Initial sizes: input area ~3 lines by default (handle above the send button)
+        fm = self.input.fontMetrics()
+        top_h = int(fm.lineSpacing() * 3 + fm.height() + 16)
+        self.split.setSizes([top_h, 300])
+
+        self.btn_send.clicked.connect(self._on_send)
+        sc = QShortcut(QKeySequence("Ctrl+Return"), self)
+        sc.activated.connect(self._on_send)
+        sc2 = QShortcut(QKeySequence("Ctrl+Enter"), self)
+        sc2.activated.connect(self._on_send)
+
+    def set_script(self, sid: int, path: str):
+        self.current_sid = sid
+        self.current_path = path
+
+    def _on_send(self):
+        text = self.input.toPlainText().strip()
+        if not text:
+            return
+        if not self.current_path:
+            QMessageBox.information(self, "情報", "スクリプトが選択されていません")
+            return
+        api_key = self._get_api_key()
+        if not api_key:
+            QMessageBox.warning(self, "APIキー未設定", ".env または環境変数 OPENAI_API_KEY を設定してください")
+            return
+        # Disable while running
+        self.btn_send.setEnabled(False)
+        self.output.append("[送信中] OpenAIへ問い合わせ中...\n")
+        # Start worker thread
+        self._thread = QThread(self)
+        self._worker = _AIWorker(api_key, text, self.current_path)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.error.connect(self._on_error)
+        self._worker.finished.connect(self._cleanup_worker)
+        self._worker.error.connect(self._cleanup_worker)
+        self._thread.start()
+
+    def _on_finished(self, content: str):
+        self.output.append("\n[回答]\n" + content + "\n")
+        self.btn_send.setEnabled(True)
+
+    def _on_error(self, msg: str):
+        self.output.append("\n[エラー]\n" + msg + "\n")
+        self.btn_send.setEnabled(True)
+
+    def _cleanup_worker(self, *args):
+        try:
+            if self._thread is not None:
+                self._thread.quit()
+                self._thread.wait(1000)
+        except Exception:
+            pass
+        self._thread = None
+        self._worker = None
+
+    def _get_api_key(self) -> str | None:
+        key = os.environ.get("OPENAI_API_KEY")
+        if key:
+            return key
+        # try to load from .env in cwd
+        env_path = Path.cwd() / ".env"
+        if env_path.exists():
+            try:
+                for line in env_path.read_text(encoding='utf-8', errors='ignore').splitlines():
+                    line = line.strip()
+                    if not line or line.startswith('#') or '=' not in line:
+                        continue
+                    k, v = line.split('=', 1)
+                    k = k.strip()
+                    v = v.strip().strip('"').strip("'")
+                    os.environ.setdefault(k, v)
+                return os.environ.get("OPENAI_API_KEY")
+            except Exception:
+                return None
+        return None
 
 class MetaEditDialog(QDialog):
     def __init__(self, name: str, tags: str, description: str, parent=None):

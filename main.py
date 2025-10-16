@@ -9,7 +9,7 @@ from PyQt6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QAction
 from repository import import_file, import_directory, fetch_all, save_meta, remove
 from runner import ScriptRunner
-from widgets import MetaEditDialog, ScriptDetailsPanel
+from widgets import MetaEditDialog, ScriptDetailsPanel, AIAssistantPanel
 
 COLUMNS = ["ID", "名前", "パス", "タグ", "説明", "最終実行", "回数"]
 
@@ -57,13 +57,21 @@ class MainWindow(QMainWindow):
         self.details = ScriptDetailsPanel(self)
 
         # Compose splitters: left-right (left: search+table, right: details+log)
-        left_container = QWidget()
-        left_layout = QVBoxLayout(left_container)
-        left_layout.addWidget(top)
-        left_layout.addWidget(self.table, 1)
+        left_top = QWidget()
+        left_top_layout = QVBoxLayout(left_top)
+        left_top_layout.addWidget(top)
+        left_top_layout.addWidget(self.table, 1)
+
+        # Left pane: vertical split (top: selection UI, bottom: AI assistant)
+        self.ai_panel = AIAssistantPanel(self)
+        left_split = QSplitter(Qt.Orientation.Vertical)
+        left_split.addWidget(left_top)
+        left_split.addWidget(self.ai_panel)
+        left_split.setStretchFactor(0, 3)
+        left_split.setStretchFactor(1, 2)
 
         top_split = QSplitter(Qt.Orientation.Horizontal)
-        top_split.addWidget(left_container)
+        top_split.addWidget(left_split)
         # Right side is a vertical split: details (top) + log (bottom)
         right_split = QSplitter(Qt.Orientation.Vertical)
         right_split.addWidget(self.details)
@@ -185,6 +193,7 @@ class MainWindow(QMainWindow):
         sid = int(self.proxy.index(idx.row(), 0).data())
         path = self.proxy.index(idx.row(), 2).data()
         self.details.set_script(sid, path)
+        self.ai_panel.set_script(sid, path)
 
     def _select_by_id(self, sid: int):
         # Find row in source model
@@ -194,7 +203,9 @@ class MainWindow(QMainWindow):
                 src_index = self.model.index(row, 0)
                 proxy_index = self.proxy.mapFromSource(src_index)
                 self.table.selectRow(proxy_index.row())
-                self.details.set_script(sid, self.model.index(row, 2).data())
+                p = self.model.index(row, 2).data()
+                self.details.set_script(sid, p)
+                self.ai_panel.set_script(sid, p)
                 break
 
     # ----- Context Menu -----
