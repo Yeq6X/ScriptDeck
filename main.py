@@ -155,6 +155,8 @@ class MainWindow(QMainWindow):
 
     # ----- Data -----
     def reload_tree(self):
+        # Snapshot currently expanded folder IDs to preserve state across reloads
+        expanded_snapshot = self._collect_expanded_ids()
         # Suppress selection-changed side effects while rebuilding the model
         self._suppress_selection_changed = True
         self.model.removeRows(0, self.model.rowCount())
@@ -196,19 +198,41 @@ class MainWindow(QMainWindow):
                 srow = self._make_script_row(s)
                 parent_for_children.appendRow(srow)
 
-        root = self.model.invisibleRootItem()
+        inv_root = self.model.invisibleRootItem()
+        # Visible pseudo root folder
+        root_row = make_row("<root>")
+        try:
+            root_row[0].setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+        except Exception:
+            pass
+        root_row[0].setData('folder', ROLE_NODE_TYPE)
+        # Use None to represent top-level root (no DB id)
+        root_row[0].setData(None, ROLE_NODE_ID)
+        inv_root.appendRow(root_row)
+        vis_root = root_row[0]
         # Root folders first
         for f in by_parent.get(None, []) or []:
-            add_folder(root, f)
+            add_folder(vis_root, f)
         # Then root scripts
         for s in scripts_in_folder(None):
             srow = self._make_script_row(s)
-            root.appendRow(srow)
+            vis_root.appendRow(srow)
 
         # Do not auto-resize columns here so restored widths persist
         self._suppress_selection_changed = False
-        # Restore expanded state after rebuild
-        self._restore_tree_state()
+        # Restore expanded state after rebuild, preferring in-session snapshot
+        if expanded_snapshot:
+            self._apply_expanded_ids(expanded_snapshot)
+        else:
+            self._restore_tree_state()
+        # Ensure pseudo root is expanded by default
+        try:
+            r_idx = self.model.indexFromItem(vis_root)
+            if r_idx.isValid():
+                pidx = self.proxy.mapFromSource(r_idx)
+                self.table.expand(pidx)
+        except Exception:
+            pass
 
     def _make_script_row(self, r: dict | tuple) -> list[QStandardItem]:
         if isinstance(r, dict):
@@ -507,23 +531,31 @@ class MainWindow(QMainWindow):
             act_new = QAction("新規フォルダ...", self)
             act_rename = QAction("名前変更...", self)
             act_delete = QAction("削除", self)
-            menu.addAction(act_new)
-            menu.addAction(act_rename)
-            menu.addAction(act_delete)
-            action = menu.exec(self.table.viewport().mapToGlobal(pos))
-            try:
-                fid = int(item.data(ROLE_NODE_ID))
-            except Exception:
-                return
-            if action == act_new:
-                self._create_folder_dialog(parent_id=fid)
-            elif action == act_rename:
-                self._rename_folder_dialog(fid, item.text())
-            elif action == act_delete:
-                reply = QMessageBox.question(self, "確認", "フォルダを削除しますか？(配下のフォルダは削除、スクリプトはルートに移動)")
-                if reply == QMessageBox.StandardButton.Yes:
-                    folder_delete(fid)
-                    self.reload_tree()
+            fid_raw = item.data(ROLE_NODE_ID)
+            # Root folder (fid_raw is None): only allow creating subfolder
+            if fid_raw is None:
+                menu.addAction(act_new)
+                action = menu.exec(self.table.viewport().mapToGlobal(pos))
+                if action == act_new:
+                    self._create_folder_dialog(parent_id=None)
+            else:
+                menu.addAction(act_new)
+                menu.addAction(act_rename)
+                menu.addAction(act_delete)
+                action = menu.exec(self.table.viewport().mapToGlobal(pos))
+                try:
+                    fid = int(fid_raw)
+                except Exception:
+                    return
+                if action == act_new:
+                    self._create_folder_dialog(parent_id=fid)
+                elif action == act_rename:
+                    self._rename_folder_dialog(fid, item.text())
+                elif action == act_delete:
+                    reply = QMessageBox.question(self, "確認", "フォルダを削除しますか？(配下のフォルダは削除、スクリプトはルートに移動)")
+                    if reply == QMessageBox.StandardButton.Yes:
+                        folder_delete(fid)
+                        self.reload_tree()
         else:
             act_run = QAction("実行", self)
             act_edit = QAction("メタデータ編集", self)
@@ -594,14 +626,23 @@ class MainWindow(QMainWindow):
         if idx is None:
             return None
         src = self.proxy.mapToSource(idx)
-        item = self.model.itemFromIndex(src)
+        src0 = self.model.index(src.row(), 0, src.parent())
+        item = self.model.itemFromIndex(src0)
         if item is None:
             return None
         if item.data(ROLE_NODE_TYPE) == 'folder':
-            return int(item.data(ROLE_NODE_ID))
+            fid_raw = item.data(ROLE_NODE_ID)
+            try:
+                return int(fid_raw) if fid_raw is not None else None
+            except Exception:
+                return None
         parent = item.parent()
         if parent is not None and parent.data(ROLE_NODE_TYPE) == 'folder':
-            return int(parent.data(ROLE_NODE_ID))
+            fid_raw = parent.data(ROLE_NODE_ID)
+            try:
+                return int(fid_raw) if fid_raw is not None else None
+            except Exception:
+                return None
         return None
 
     def _select_tree_script_by_id(self, sid: int):
@@ -673,6 +714,35 @@ class MainWindow(QMainWindow):
                     wanted = {int(x) for x in list(vals)}
                 except Exception:
                     wanted = set()
+            self._apply_expanded_ids(wanted)
+        except Exception:
+            pass
+
+    def _collect_expanded_ids(self) -> set[int]:
+        ids: set[int] = set()
+        try:
+            def collect(parent_index: QModelIndex):
+                rows = self.model.rowCount(parent_index)
+                for r in range(rows):
+                    idx0 = self.model.index(r, 0, parent_index)
+                    item = self.model.itemFromIndex(idx0)
+                    if item is None:
+                        continue
+                    if item.data(ROLE_NODE_TYPE) == 'folder':
+                        pidx = self.proxy.mapFromSource(idx0)
+                        if self.table.isExpanded(pidx):
+                            fid = item.data(ROLE_NODE_ID)
+                            if isinstance(fid, int):
+                                ids.add(int(fid))
+                    if self.model.hasChildren(idx0):
+                        collect(idx0)
+            collect(QModelIndex())
+        except Exception:
+            pass
+        return ids
+
+    def _apply_expanded_ids(self, wanted: set[int]):
+        try:
             def apply(parent_index: QModelIndex):
                 rows = self.model.rowCount(parent_index)
                 for r in range(rows):
@@ -681,8 +751,8 @@ class MainWindow(QMainWindow):
                     if item is None:
                         continue
                     if item.data(ROLE_NODE_TYPE) == 'folder':
-                        fid = int(item.data(ROLE_NODE_ID))
-                        if fid in wanted:
+                        fid = item.data(ROLE_NODE_ID)
+                        if isinstance(fid, int) and int(fid) in wanted:
                             pidx = self.proxy.mapFromSource(idx0)
                             self.table.expand(pidx)
                     if self.model.hasChildren(idx0):
@@ -806,15 +876,16 @@ class ScriptTreeView(QTreeView):
         target_item = None
         if target_index.isValid():
             src = window.proxy.mapToSource(target_index)
-            target_item = window.model.itemFromIndex(src)
+            src0 = window.model.index(src.row(), 0, src.parent())
+            target_item = window.model.itemFromIndex(src0)
             if target_item is not None:
                 if target_item.data(ROLE_NODE_TYPE) == 'folder':
-                    folder_id = int(target_item.data(ROLE_NODE_ID))
+                    folder_id = target_item.data(ROLE_NODE_ID)  # may be None for root
                 elif target_item.data(ROLE_NODE_TYPE) == 'script':
                     # Use parent folder of the target script
                     parent = target_item.parent()
                     if parent is not None and parent.data(ROLE_NODE_TYPE) == 'folder':
-                        folder_id = int(parent.data(ROLE_NODE_ID))
+                        folder_id = parent.data(ROLE_NODE_ID)  # may be None
         sel = self.selectionModel().selectedIndexes()
         moved_any = False
         handled = False
@@ -837,25 +908,36 @@ class ScriptTreeView(QTreeView):
                 invalid_target = False
                 if target_item is not None:
                     if target_item.data(ROLE_NODE_TYPE) == 'folder':
-                        tfid = int(target_item.data(ROLE_NODE_ID))
-                        if tfid == fid:
-                            invalid_target = True
-                        else:
-                            # Check descendant: DFS from current folder item
-                            def is_descendant(curr_item):
-                                rows = curr_item.rowCount()
-                                for r in range(rows):
-                                    child = curr_item.child(r, 0)
-                                    if child is None:
-                                        continue
-                                    if child.data(ROLE_NODE_TYPE) == 'folder':
-                                        if int(child.data(ROLE_NODE_ID)) == tfid:
-                                            return True
-                                        if is_descendant(child):
-                                            return True
-                                return False
-                            if is_descendant(it):
-                                invalid_target = True
+                        tfid_raw = target_item.data(ROLE_NODE_ID)
+                        if tfid_raw is not None:
+                            try:
+                                tfid = int(tfid_raw)
+                            except Exception:
+                                tfid = None
+                            if tfid is not None:
+                                if tfid == fid:
+                                    invalid_target = True
+                                else:
+                                    # Check descendant: DFS from current folder item
+                                    def is_descendant(curr_item):
+                                        rows = curr_item.rowCount()
+                                        for r in range(rows):
+                                            child = curr_item.child(r, 0)
+                                            if child is None:
+                                                continue
+                                            if child.data(ROLE_NODE_TYPE) == 'folder':
+                                                try:
+                                                    cid_raw = child.data(ROLE_NODE_ID)
+                                                    cid = int(cid_raw) if cid_raw is not None else None
+                                                except Exception:
+                                                    cid = None
+                                                if cid is not None and cid == tfid:
+                                                    return True
+                                                if is_descendant(child):
+                                                    return True
+                                        return False
+                                    if is_descendant(it):
+                                        invalid_target = True
                 if not invalid_target:
                     try:
                         folder_move(fid, folder_id)
