@@ -41,6 +41,14 @@ def get_openai_api_key() -> str | None:
     return None
 
 
+def get_openai_model(default: str = "gpt-5") -> str:
+    # Try environment first (possibly loaded from .env by get_openai_api_key)
+    mdl = os.environ.get("OPENAI_MODEL")
+    if mdl and isinstance(mdl, str) and mdl.strip():
+        return mdl.strip()
+    return default
+
+
 class _HistoryEventFilter(QObject):
     def __init__(self, sid: int, option_name: str, model: QStringListModel, parent=None):
         super().__init__(parent)
@@ -127,7 +135,7 @@ class _AIWorker(QObject):
                 )},
             ]
             payload = {
-                "model": "gpt-5",
+                "model": get_openai_model(),
                 "messages": messages,
             }
             req = urllib.request.Request(
