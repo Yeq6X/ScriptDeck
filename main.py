@@ -35,11 +35,13 @@ class MainWindow(QMainWindow):
         top_layout = QHBoxLayout(top)
         self.search = QLineEdit()
         self.search.setPlaceholderText("検索（名前・タグ）")
+        btn_new_folder = QPushButton("新規フォルダ...")
         btn_add = QPushButton("追加...")
         btn_import = QPushButton("フォルダ取り込み...")
         # 実行/停止ボタンは右ペインに移動
 
         top_layout.addWidget(self.search, 1)
+        top_layout.addWidget(btn_new_folder)
         top_layout.addWidget(btn_add)
         top_layout.addWidget(btn_import)
         # 実行/停止ボタンは右ペインに配置するため左側には置かない
@@ -121,6 +123,7 @@ class MainWindow(QMainWindow):
 
         # Signals
         self.search.textChanged.connect(self._apply_filter)
+        btn_new_folder.clicked.connect(self._on_new_folder_top)
         btn_add.clicked.connect(self.add_script)
         btn_import.clicked.connect(self.import_folder)
         # 実行/停止は右ペインのボタンから制御
@@ -545,6 +548,15 @@ class MainWindow(QMainWindow):
         wd = self.details.get_working_dir()
         self.details.save_current_values()
         self.runner.run(int(sid), path, args=args, python_executable=pyexe, working_dir=wd)
+
+    def _on_new_folder_top(self):
+        # Create a new folder under the currently selected folder (or root if none)
+        try:
+            parent_id = self._current_folder_id()
+            self._create_folder_dialog(parent_id)
+        except Exception:
+            # Fallback: create at root
+            self._create_folder_dialog(None)
 
     # ----- Tree helpers -----
     def _current_folder_id(self) -> int | None:
