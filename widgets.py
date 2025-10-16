@@ -1,14 +1,15 @@
 from PyQt6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QTextEdit, QDialogButtonBox,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
-    QScrollArea, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox
+    QScrollArea, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox,
+    QRadioButton
 )
 from PyQt6.QtCore import Qt, QProcess, QTimer, pyqtSignal
 import sys
 import os
 from pathlib import Path
 import json
-from db import list_venvs, upsert_venv, delete_venv, get_script_extras, update_args_schema, update_args_values, set_script_venv, get_venv
+from db import list_venvs, upsert_venv, delete_venv, get_script_extras, update_args_schema, update_args_values, set_script_venv, get_venv, set_working_dir
 
 class MetaEditDialog(QDialog):
     def __init__(self, name: str, tags: str, description: str, parent=None):
@@ -140,6 +141,19 @@ class ScriptDetailsPanel(QWidget):
         env_row.addWidget(self.btn_probe)
         root.addLayout(env_row)
 
+        # Working directory row
+        wd_row = QHBoxLayout()
+        wd_row.addWidget(QLabel("作業ディレクトリ:"))
+        self.rb_cwd_script = QRadioButton("スクリプトのディレクトリ")
+        self.rb_cwd_custom = QRadioButton("指定")
+        self.cwd_edit = QLineEdit()
+        self.cwd_browse = QPushButton("参照...")
+        wd_row.addWidget(self.rb_cwd_script)
+        wd_row.addWidget(self.rb_cwd_custom)
+        wd_row.addWidget(self.cwd_edit, 1)
+        wd_row.addWidget(self.cwd_browse)
+        root.addLayout(wd_row)
+
         # Scrollable form for options
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -153,6 +167,10 @@ class ScriptDetailsPanel(QWidget):
         self.btn_probe.clicked.connect(self._on_probe)
         self.btn_run.clicked.connect(lambda: self.runRequested.emit())
         self.btn_stop.clicked.connect(lambda: self.stopRequested.emit())
+        self.rb_cwd_script.toggled.connect(self._on_workdir_changed)
+        self.rb_cwd_custom.toggled.connect(self._on_workdir_changed)
+        self.cwd_edit.editingFinished.connect(self._on_workdir_changed)
+        self.cwd_browse.clicked.connect(self._on_browse_wd)
 
         self._load_venvs()
 
@@ -163,6 +181,15 @@ class ScriptDetailsPanel(QWidget):
         extras = get_script_extras(sid)
         # Select venv
         self._load_venvs(select_id=extras.get("venv_id"))
+        # Working dir
+        wd = extras.get("working_dir")
+        if wd:
+            self.rb_cwd_custom.setChecked(True)
+            self.cwd_edit.setText(wd)
+        else:
+            self.rb_cwd_script.setChecked(True)
+            self.cwd_edit.clear()
+        self._update_wd_enabled()
         # Build UI from cached schema if present, else probe
         schema_json = extras.get("args_schema")
         values_json = extras.get("args_values")
@@ -197,6 +224,12 @@ class ScriptDetailsPanel(QWidget):
         vid, _name, python_path = self._venv_items[idx - 1]
         return python_path
 
+    def get_working_dir(self) -> str | None:
+        if self.rb_cwd_custom.isChecked():
+            p = self.cwd_edit.text().strip()
+            return p or None
+        return None
+
     # ----- Internals -----
     def _load_venvs(self, select_id: int | None = None):
         self.env_combo.blockSignals(True)
@@ -221,6 +254,29 @@ class ScriptDetailsPanel(QWidget):
         set_script_venv(self.current_sid, venv_id)
         # Optionally re-probe on env change
         self._probe_help_async()
+
+    def _on_workdir_changed(self):
+        self._update_wd_enabled()
+        if self.current_sid is None:
+            return
+        wd = self.get_working_dir()
+        set_working_dir(self.current_sid, wd)
+        # Re-probe since working dir might affect help
+        self._probe_help_async()
+
+    def _on_browse_wd(self):
+        base = str(Path(self.current_path).parent) if self.current_path else str(Path.home())
+        folder = QFileDialog.getExistingDirectory(self, "作業ディレクトリを選択", base)
+        if not folder:
+            return
+        self.rb_cwd_custom.setChecked(True)
+        self.cwd_edit.setText(folder)
+        self._on_workdir_changed()
+
+    def _update_wd_enabled(self):
+        custom = self.rb_cwd_custom.isChecked()
+        self.cwd_edit.setEnabled(custom)
+        self.cwd_browse.setEnabled(custom)
 
     def _on_manage_env(self):
         dlg = VenvManagerDialog(self)
@@ -270,7 +326,8 @@ class ScriptDetailsPanel(QWidget):
         proc = QProcess(self)
         proc.setProgram(python)
         proc.setArguments([self.current_path, "-h"])
-        proc.setWorkingDirectory(str(Path(self.current_path).parent))
+        wd = self.get_working_dir() or str(Path(self.current_path).parent)
+        proc.setWorkingDirectory(wd)
         buf_out = []
         buf_err = []
         proc.readyReadStandardOutput.connect(lambda: buf_out.append(bytes(proc.readAllStandardOutput()).decode("utf-8", errors="ignore")))

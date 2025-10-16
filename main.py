@@ -151,8 +151,9 @@ class MainWindow(QMainWindow):
         self.log.clear()
         args = self.details.build_args()
         pyexe = self.details.get_python_executable()
+        wd = self.details.get_working_dir()
         self.details.save_current_values()
-        self.runner.run(sid, path, args=args, python_executable=pyexe)
+        self.runner.run(sid, path, args=args, python_executable=pyexe, working_dir=wd)
 
     def on_started(self, sid: int, cmdline: str):
         self.log.append(f"[RUN] {cmdline}\n")
@@ -217,8 +218,9 @@ class MainWindow(QMainWindow):
             self.log.clear()
             args = self.details.build_args()
             pyexe = self.details.get_python_executable()
+            wd = self.details.get_working_dir()
             self.details.save_current_values()
-            self.runner.run(sid, path, args=args, python_executable=pyexe)
+            self.runner.run(sid, path, args=args, python_executable=pyexe, working_dir=wd)
         elif action == act_edit:
             dlg = MetaEditDialog(name, tags, desc, self)
             if dlg.exec() == dlg.DialogCode.Accepted:
@@ -240,8 +242,9 @@ class MainWindow(QMainWindow):
         self.log.clear()
         args = self.details.build_args()
         pyexe = self.details.get_python_executable()
+        wd = self.details.get_working_dir()
         self.details.save_current_values()
-        self.runner.run(sid, path, args=args, python_executable=pyexe)
+        self.runner.run(sid, path, args=args, python_executable=pyexe, working_dir=wd)
 
 def main():
     app = QApplication(sys.argv)

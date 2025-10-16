@@ -54,6 +54,11 @@ def _ensure_schema(conn: sqlite3.Connection):
             conn.execute("ALTER TABLE scripts ADD COLUMN venv_id INTEGER DEFAULT NULL")
         except Exception:
             pass
+    if 'working_dir' not in cols:
+        try:
+            conn.execute("ALTER TABLE scripts ADD COLUMN working_dir TEXT DEFAULT NULL")
+        except Exception:
+            pass
 
 def upsert_script(name: str, path: str, tags: str = "", description: str = "") -> int:
     with get_conn() as conn:
@@ -98,12 +103,12 @@ def delete_script(sid: int):
 def get_script_extras(sid: int) -> Dict[str, Any]:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT args_schema, args_values, venv_id FROM scripts WHERE id=?",
+            "SELECT args_schema, args_values, venv_id, working_dir FROM scripts WHERE id=?",
             (sid,),
         ).fetchone()
         if not row:
-            return {"args_schema": None, "args_values": None, "venv_id": None}
-        return {"args_schema": row[0], "args_values": row[1], "venv_id": row[2]}
+            return {"args_schema": None, "args_values": None, "venv_id": None, "working_dir": None}
+        return {"args_schema": row[0], "args_values": row[1], "venv_id": row[2], "working_dir": row[3]}
 
 def update_args_schema(sid: int, schema_json: Optional[str]):
     with get_conn() as conn:
@@ -116,6 +121,10 @@ def update_args_values(sid: int, values_json: Optional[str]):
 def set_script_venv(sid: int, venv_id: Optional[int]):
     with get_conn() as conn:
         conn.execute("UPDATE scripts SET venv_id=? WHERE id=?", (venv_id, sid))
+
+def set_working_dir(sid: int, working_dir: Optional[str]):
+    with get_conn() as conn:
+        conn.execute("UPDATE scripts SET working_dir=? WHERE id=?", (working_dir, sid))
 
 # ----- Venvs CRUD -----
 def upsert_venv(name: str, path: str, python_path: str) -> int:

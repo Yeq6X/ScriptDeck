@@ -15,7 +15,7 @@ class ScriptRunner(QObject):
         self.proc: QProcess | None = None
         self.current_sid: int | None = None
 
-    def run(self, sid: int, script_path: str, args: list[str] | None = None, python_executable: str | None = None):
+    def run(self, sid: int, script_path: str, args: list[str] | None = None, python_executable: str | None = None, working_dir: str | None = None):
         if self.proc and self.proc.state() != QProcess.ProcessState.NotRunning:
             self.stderr.emit("実行中のプロセスがあります。停止してから再実行してください。\n")
             return
@@ -25,7 +25,8 @@ class ScriptRunner(QObject):
         prog = python_executable or sys.executable
         self.proc.setProgram(prog)
         self.proc.setArguments([script_path, *args])
-        self.proc.setWorkingDirectory(str(Path(script_path).parent))
+        wd = working_dir or str(Path(script_path).parent)
+        self.proc.setWorkingDirectory(wd)
 
         self.proc.readyReadStandardOutput.connect(
             lambda: self.stdout.emit(bytes(self.proc.readAllStandardOutput()).decode("utf-8", errors="ignore"))
@@ -36,6 +37,8 @@ class ScriptRunner(QObject):
         self.proc.finished.connect(self._on_finished)
 
         cmdline = f"{prog} {script_path} " + " ".join(args)
+        if wd:
+            cmdline += f" (cwd={wd})"
         self.started.emit(sid, cmdline)
         self.proc.start()
 
