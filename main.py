@@ -219,6 +219,16 @@ class MainWindow(QMainWindow):
             pyexe = self.details.get_python_executable()
             self.details.save_current_values()
             self.runner.run(sid, path, args=args, python_executable=pyexe)
+        elif action == act_edit:
+            dlg = MetaEditDialog(name, tags, desc, self)
+            if dlg.exec() == dlg.DialogCode.Accepted:
+                n, t, d = dlg.values()
+                save_meta(sid, n or name, t, d)
+                self.load_table()
+        elif action == act_delete:
+            from repository import remove
+            remove(sid)
+            self.load_table()
 
     def _run_from_details(self):
         idx = self._current_index()
@@ -232,16 +242,6 @@ class MainWindow(QMainWindow):
         pyexe = self.details.get_python_executable()
         self.details.save_current_values()
         self.runner.run(sid, path, args=args, python_executable=pyexe)
-        elif action == act_edit:
-            dlg = MetaEditDialog(name, tags, desc, self)
-            if dlg.exec() == dlg.DialogCode.Accepted:
-                n, t, d = dlg.values()
-                save_meta(sid, n or name, t, d)
-                self.load_table()
-        elif action == act_delete:
-            from repository import remove
-            remove(sid)
-            self.load_table()
 
 def main():
     app = QApplication(sys.argv)
