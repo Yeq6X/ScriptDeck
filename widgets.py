@@ -10,6 +10,8 @@ import sys
 import os
 from pathlib import Path
 import json
+import re
+import ast
 from db import (
     list_venvs, upsert_venv, delete_venv, get_script_extras, update_args_schema,
     update_args_values, set_script_venv, get_venv, set_working_dir,
@@ -680,6 +682,30 @@ class ScriptDetailsPanel(QWidget):
                 popup.installEventFilter(ef)
                 self._history_models[name] = model
                 self._history_filters[name] = ef
+                # Seed default into history (if parsed and not present)
+                try:
+                    default_val = opt.get("default")
+                    if isinstance(default_val, str):
+                        default_val = default_val.strip()
+                    if default_val:
+                        try:
+                            pass
+                        except Exception:
+                            pass
+                        existing = set(model.stringList())
+                        if default_val not in existing and self.current_sid is not None:
+                            upsert_option_history(self.current_sid, name, default_val)
+                            lst = [default_val] + list(existing)
+                            if len(lst) > 20:
+                                lst = lst[:20]
+                            model.setStringList(lst)
+                    else:
+                        try:
+                            pass
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
             else:
                 from PyQt6.QtWidgets import QCheckBox
                 w = QCheckBox()
@@ -706,6 +732,17 @@ class ScriptDetailsPanel(QWidget):
         def on_finish(_code, _status):
             text = "".join(buf_out) + "\n" + "".join(buf_err)
             schema = self._parse_help_to_schema(text)
+            # Augment defaults using AST static analysis (best-effort)
+            try:
+                ast_defaults = self._extract_ast_defaults(self.current_path)
+                if isinstance(schema, dict) and isinstance(ast_defaults, dict):
+                    for opt in schema.get("options", []) or []:
+                        name = opt.get("name")
+                        if name and not opt.get("default") and name in ast_defaults:
+                            opt["default"] = ast_defaults[name]
+                            pass
+            except Exception as e:
+                pass
             update_args_schema(self.current_sid, json.dumps(schema, ensure_ascii=False))
             # Preserve existing values if possible
             extras = get_script_extras(self.current_sid)
@@ -715,6 +752,77 @@ class ScriptDetailsPanel(QWidget):
 
         proc.finished.connect(on_finish)
         proc.start()
+
+    def _extract_ast_defaults(self, script_path: str) -> dict[str, str]:
+        """Parse the script via AST and extract add_argument defaults (best-effort).
+        Returns mapping from preferred option name (long or first flag) to string default.
+        """
+        try:
+            with open(script_path, 'r', encoding='utf-8', errors='ignore') as f:
+                src = f.read()
+        except Exception as e:
+            try:
+                pass
+            except Exception:
+                pass
+            return {}
+
+        try:
+            tree = ast.parse(src, script_path)
+        except Exception as e:
+            try:
+                pass
+            except Exception:
+                pass
+            return {}
+
+        result: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                f = node.func
+                if isinstance(f, ast.Attribute) and f.attr == 'add_argument':
+                    # Collect flags
+                    flags: list[str] = []
+                    for a in node.args:
+                        if isinstance(a, ast.Constant) and isinstance(a.value, str):
+                            flags.append(a.value)
+                    # Collect keywords
+                    default_val = None
+                    action_val = None
+                    for kw in (node.keywords or []):
+                        if kw.arg == 'default':
+                            try:
+                                default_val = ast.literal_eval(kw.value)
+                            except Exception:
+                                default_val = None
+                        elif kw.arg == 'action':
+                            try:
+                                action_val = ast.literal_eval(kw.value)
+                            except Exception:
+                                action_val = None
+                    if default_val is None and action_val in ('store_true', 'store_false'):
+                        default_val = (action_val == 'store_false')
+                    # Choose preferred name
+                    name = None
+                    for flg in flags:
+                        if isinstance(flg, str) and flg.startswith('--'):
+                            name = flg; break
+                    if name is None and flags:
+                        name = flags[0]
+                    if name is None:
+                        continue
+                    # Convert to string for seeding into history
+                    if default_val is not None:
+                        sval = str(default_val)
+                    else:
+                        sval = None
+                    try:
+                        pass
+                    except Exception:
+                        pass
+                    if sval is not None and sval != '':
+                        result[name] = sval
+        return result
 
     def _parse_help_to_schema(self, help_text: str) -> dict:
         # Very simple heuristic parser for argparse-like help
@@ -729,12 +837,14 @@ class ScriptDetailsPanel(QWidget):
             if not parts:
                 continue
             opt_part = parts[0]
+            desc = " ".join(parts[1:]) if len(parts) > 1 else ""
             # split by comma between short and long
             names = [p.strip() for p in opt_part.split(",")]
             long_name = None
             short_name = None
             takes_value = False
             metavar = None
+            default_val = None
             for nm in names:
                 # separate name and metavar by space if any
                 tokens = nm.split()
@@ -751,16 +861,30 @@ class ScriptDetailsPanel(QWidget):
                     metavar = mv
                 if "=" in name_tok:
                     takes_value = True
+            # Heuristic default extraction from description
+            if desc:
+                m = re.search(r"[\[(]\s*default\s*[:=]\s*([^)\]]+)", desc, re.IGNORECASE)
+                if m:
+                    default_val = m.group(1).strip().strip(',.; ')
+                else:
+                    m2 = re.search(r"defaults?\s+to\s+([^.;,\]]+)", desc, re.IGNORECASE)
+                    if m2:
+                        default_val = m2.group(1).strip().strip(',.; ')
             key = long_name or short_name
             if not key or key in seen:
                 continue
             seen.add(key)
+            try:
+                pass
+            except Exception:
+                pass
             options.append({
                 "name": key,
                 "long": long_name,
                 "short": short_name,
                 "takes_value": takes_value,
                 "metavar": metavar,
+                "default": default_val,
             })
         return {"options": options}
 
