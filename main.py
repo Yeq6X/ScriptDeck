@@ -160,7 +160,10 @@ class MainWindow(QMainWindow):
 
     def on_finished(self, sid: int, exitCode: int):
         self.log.append(f"\n[EXIT] code={exitCode}\n")
+        # Reload table while preserving the selection for the finished script
         self.load_table()
+        if sid is not None and sid >= 0:
+            self._select_by_id(sid)
 
     def _apply_filter(self, text: str):
         # 名前・タグ・説明・パスをまとめてフィルタ（大文字小文字無視／リテラル検索）
