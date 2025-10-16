@@ -48,15 +48,15 @@ class MainWindow(QMainWindow):
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
 
-        # --- Log dock ---
+        # --- Log (will be placed under right pane) ---
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         self.log.setPlaceholderText("実行ログがここに表示されます")
 
-        # Right details panel
+        # Right details panel (top of right vertical split)
         self.details = ScriptDetailsPanel(self)
 
-        # Compose splitters: top (left: search+table, right: details), bottom: log
+        # Compose splitters: left-right (left: search+table, right: details+log)
         left_container = QWidget()
         left_layout = QVBoxLayout(left_container)
         left_layout.addWidget(top)
@@ -64,17 +64,17 @@ class MainWindow(QMainWindow):
 
         top_split = QSplitter(Qt.Orientation.Horizontal)
         top_split.addWidget(left_container)
-        top_split.addWidget(self.details)
+        # Right side is a vertical split: details (top) + log (bottom)
+        right_split = QSplitter(Qt.Orientation.Vertical)
+        right_split.addWidget(self.details)
+        right_split.addWidget(self.log)
+        right_split.setStretchFactor(0, 3)
+        right_split.setStretchFactor(1, 2)
+        top_split.addWidget(right_split)
         top_split.setStretchFactor(0, 3)
         top_split.setStretchFactor(1, 2)
 
-        main_split = QSplitter(Qt.Orientation.Vertical)
-        main_split.addWidget(top_split)
-        main_split.addWidget(self.log)
-        main_split.setStretchFactor(0, 3)
-        main_split.setStretchFactor(1, 2)
-
-        self.setCentralWidget(main_split)
+        self.setCentralWidget(top_split)
 
         # Runner
         self.runner = ScriptRunner(self)

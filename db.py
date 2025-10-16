@@ -26,6 +26,16 @@ CREATE TABLE IF NOT EXISTS venvs (
   created_at TEXT DEFAULT NULL,
   last_used_at TEXT DEFAULT NULL
 );
+
+CREATE TABLE IF NOT EXISTS option_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  script_id INTEGER NOT NULL,
+  option TEXT NOT NULL,
+  value TEXT NOT NULL,
+  last_used_at TEXT DEFAULT NULL,
+  use_count INTEGER DEFAULT 1,
+  UNIQUE(script_id, option, value)
+);
 """
 
 def get_conn() -> sqlite3.Connection:
@@ -163,3 +173,48 @@ def touch_venv_last_used(venv_id: int):
     now = datetime.now(timezone.utc).isoformat()
     with get_conn() as conn:
         conn.execute("UPDATE venvs SET last_used_at=? WHERE id=?", (now, venv_id))
+
+# ----- Option history -----
+def upsert_option_history(script_id: int, option: str, value: str, keep: int = 20):
+    if not value:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO option_history(script_id, option, value, last_used_at, use_count)
+            VALUES(?,?,?,?,1)
+            ON CONFLICT(script_id, option, value) DO UPDATE SET
+              last_used_at=excluded.last_used_at,
+              use_count=option_history.use_count+1
+            """,
+            (script_id, option, value, now),
+        )
+        # prune
+        conn.execute(
+            """
+            DELETE FROM option_history
+            WHERE script_id=? AND option=? AND id NOT IN (
+              SELECT id FROM option_history
+              WHERE script_id=? AND option=?
+              ORDER BY last_used_at DESC, use_count DESC, id DESC
+              LIMIT ?
+            )
+            """,
+            (script_id, option, script_id, option, keep),
+        )
+
+def list_option_history(script_id: int, option: str, limit: int = 20) -> list[str]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT value FROM option_history WHERE script_id=? AND option=? ORDER BY last_used_at DESC, use_count DESC, id DESC LIMIT ?",
+            (script_id, option, limit),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+def delete_option_history(script_id: int, option: str, value: str):
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM option_history WHERE script_id=? AND option=? AND value=?",
+            (script_id, option, value),
+        )

@@ -2,14 +2,47 @@ from PyQt6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QTextEdit, QDialogButtonBox,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
     QScrollArea, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox,
-    QRadioButton
+    QRadioButton, QCompleter
 )
-from PyQt6.QtCore import Qt, QProcess, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QProcess, QTimer, pyqtSignal, QStringListModel, QEvent, QObject
 import sys
 import os
 from pathlib import Path
 import json
-from db import list_venvs, upsert_venv, delete_venv, get_script_extras, update_args_schema, update_args_values, set_script_venv, get_venv, set_working_dir
+from db import (
+    list_venvs, upsert_venv, delete_venv, get_script_extras, update_args_schema,
+    update_args_values, set_script_venv, get_venv, set_working_dir,
+    list_option_history, upsert_option_history, delete_option_history
+)
+
+
+class _HistoryEventFilter(QObject):
+    def __init__(self, sid: int, option_name: str, model: QStringListModel, parent=None):
+        super().__init__(parent)
+        self.sid = sid
+        self.option_name = option_name
+        self.model = model
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.KeyPress:
+            try:
+                key = event.key()
+                mods = event.modifiers()
+            except Exception:
+                return False
+            if key == Qt.Key.Key_Delete and (mods & Qt.KeyboardModifier.ShiftModifier):
+                view = obj  # QAbstractItemView
+                idx = view.currentIndex()
+                if idx.isValid():
+                    val = idx.data()
+                    try:
+                        delete_option_history(self.sid, self.option_name, val)
+                    except Exception:
+                        pass
+                    lst = [s for s in self.model.stringList() if s != val]
+                    self.model.setStringList(lst)
+                    return True
+        return False
 
 class MetaEditDialog(QDialog):
     def __init__(self, name: str, tags: str, description: str, parent=None):
@@ -118,17 +151,10 @@ class ScriptDetailsPanel(QWidget):
         self.current_path: str | None = None
         self._option_widgets: dict[str, QWidget] = {}
         self._venv_items: list[tuple[int, str, str]] = []  # (id, name, python_path)
+        self._history_models: dict[str, QStringListModel] = {}
+        self._history_filters: dict[str, _HistoryEventFilter] = {}
 
         root = QVBoxLayout(self)
-
-        # Execute row
-        exec_row = QHBoxLayout()
-        self.btn_run = QPushButton("実行")
-        self.btn_stop = QPushButton("停止")
-        exec_row.addWidget(self.btn_run)
-        exec_row.addWidget(self.btn_stop)
-        exec_row.addStretch(1)
-        root.addLayout(exec_row)
 
         # Environment row
         env_row = QHBoxLayout()
@@ -161,6 +187,15 @@ class ScriptDetailsPanel(QWidget):
         self.form = QFormLayout(self.form_host)
         self.scroll.setWidget(self.form_host)
         root.addWidget(self.scroll, 1)
+
+        # Execute row (placed at bottom of the panel)
+        exec_row = QHBoxLayout()
+        self.btn_run = QPushButton("実行")
+        self.btn_stop = QPushButton("停止")
+        exec_row.addWidget(self.btn_run)
+        exec_row.addWidget(self.btn_stop)
+        exec_row.addStretch(1)
+        root.addLayout(exec_row)
 
         self.env_combo.currentIndexChanged.connect(self._on_env_changed)
         self.btn_manage_env.clicked.connect(self._on_manage_env)
@@ -295,6 +330,8 @@ class ScriptDetailsPanel(QWidget):
             if w is not None:
                 w.deleteLater()
         self._option_widgets.clear()
+        self._history_models.clear()
+        self._history_filters.clear()
 
     def _build_form(self, schema: dict, values: dict):
         self._clear_form()
@@ -310,6 +347,26 @@ class ScriptDetailsPanel(QWidget):
                 val = values.get(name)
                 if isinstance(val, str):
                     w.setText(val)
+                # Attach history completer
+                if self.current_sid is not None:
+                    items = list_option_history(self.current_sid, name, limit=20)
+                else:
+                    items = []
+                model = QStringListModel(items, self)
+                completer = QCompleter(model, self)
+                completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+                # 部分一致に設定（ブラウザ風）
+                try:
+                    completer.setFilterMode(Qt.MatchFlag.MatchContains)
+                except Exception:
+                    pass
+                w.setCompleter(completer)
+                # Install Shift+Delete handler on popup
+                popup = completer.popup()
+                ef = _HistoryEventFilter(self.current_sid or -1, name, model, self)
+                popup.installEventFilter(ef)
+                self._history_models[name] = model
+                self._history_filters[name] = ef
             else:
                 from PyQt6.QtWidgets import QCheckBox
                 w = QCheckBox()
@@ -400,7 +457,24 @@ class ScriptDetailsPanel(QWidget):
         values: dict[str, object] = {}
         for key, w in self._option_widgets.items():
             if isinstance(w, QLineEdit):
-                values[key] = w.text()
+                val = w.text().strip()
+                values[key] = val
+                if val:
+                    # upsert into history and update completer model (MRU)
+                    try:
+                        upsert_option_history(self.current_sid, key, val)
+                    except Exception:
+                        pass
+                    model = self._history_models.get(key)
+                    if model is not None:
+                        lst = model.stringList()
+                        if val in lst:
+                            lst = [val] + [x for x in lst if x != val]
+                        else:
+                            lst = [val] + lst
+                        if len(lst) > 20:
+                            lst = lst[:20]
+                        model.setStringList(lst)
             else:
                 values[key] = bool(getattr(w, 'isChecked') and w.isChecked())
         update_args_values(self.current_sid, json.dumps(values, ensure_ascii=False))
