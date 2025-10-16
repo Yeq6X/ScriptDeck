@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox,
     QRadioButton, QCompleter, QSplitter
 )
-from PyQt6.QtCore import Qt, QProcess, QTimer, pyqtSignal, QStringListModel, QEvent, QObject, QThread
+from PyQt6.QtCore import Qt, QProcess, QTimer, pyqtSignal, QStringListModel, QEvent, QObject, QThread, QSettings
 from PyQt6.QtGui import QShortcut, QKeySequence
 import sys
 import os
@@ -221,6 +221,21 @@ class AIAssistantPanel(QWidget):
             except Exception:
                 return None
         return None
+
+    # ----- Settings -----
+    def save_settings(self, settings: QSettings):
+        try:
+            settings.setValue("ai/split", self.split.saveState())
+        except Exception:
+            pass
+
+    def restore_settings(self, settings: QSettings):
+        try:
+            st = settings.value("ai/split")
+            if st is not None:
+                self.split.restoreState(st)
+        except Exception:
+            pass
 
 class MetaEditDialog(QDialog):
     def __init__(self, name: str, tags: str, description: str, parent=None):

@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLineEdit, QTableView, QTextEdit, QMessageBox, QAbstractItemView, QMenu,
     QSplitter
 )
-from PyQt6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression
+from PyQt6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QSettings
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QAction
 from repository import import_file, import_directory, fetch_all, save_meta, remove
 from runner import ScriptRunner
@@ -64,25 +64,25 @@ class MainWindow(QMainWindow):
 
         # Left pane: vertical split (top: selection UI, bottom: AI assistant)
         self.ai_panel = AIAssistantPanel(self)
-        left_split = QSplitter(Qt.Orientation.Vertical)
-        left_split.addWidget(left_top)
-        left_split.addWidget(self.ai_panel)
-        left_split.setStretchFactor(0, 3)
-        left_split.setStretchFactor(1, 2)
+        self.left_split = QSplitter(Qt.Orientation.Vertical)
+        self.left_split.addWidget(left_top)
+        self.left_split.addWidget(self.ai_panel)
+        self.left_split.setStretchFactor(0, 3)
+        self.left_split.setStretchFactor(1, 2)
 
-        top_split = QSplitter(Qt.Orientation.Horizontal)
-        top_split.addWidget(left_split)
+        self.split_main = QSplitter(Qt.Orientation.Horizontal)
+        self.split_main.addWidget(self.left_split)
         # Right side is a vertical split: details (top) + log (bottom)
-        right_split = QSplitter(Qt.Orientation.Vertical)
-        right_split.addWidget(self.details)
-        right_split.addWidget(self.log)
-        right_split.setStretchFactor(0, 3)
-        right_split.setStretchFactor(1, 2)
-        top_split.addWidget(right_split)
-        top_split.setStretchFactor(0, 3)
-        top_split.setStretchFactor(1, 2)
+        self.right_split = QSplitter(Qt.Orientation.Vertical)
+        self.right_split.addWidget(self.details)
+        self.right_split.addWidget(self.log)
+        self.right_split.setStretchFactor(0, 3)
+        self.right_split.setStretchFactor(1, 2)
+        self.split_main.addWidget(self.right_split)
+        self.split_main.setStretchFactor(0, 3)
+        self.split_main.setStretchFactor(1, 2)
 
-        self.setCentralWidget(top_split)
+        self.setCentralWidget(self.split_main)
 
         # Runner
         self.runner = ScriptRunner(self)
@@ -100,6 +100,7 @@ class MainWindow(QMainWindow):
         self.details.stopRequested.connect(self.runner.kill)
         self.table.selectionModel().selectionChanged.connect(self._on_selection_changed)
 
+        self._restore_ui_state()
         self.load_table()
 
     # ----- Data -----
@@ -172,6 +173,52 @@ class MainWindow(QMainWindow):
         self.load_table()
         if sid is not None and sid >= 0:
             self._select_by_id(sid)
+
+    # ----- Settings persistence -----
+    def _restore_ui_state(self):
+        settings = QSettings("ScriptDeck", "ScriptDeck")
+        geom = settings.value("main/geometry")
+        if geom is not None:
+            try:
+                self.restoreGeometry(geom)
+            except Exception:
+                pass
+        s_main = settings.value("split/main")
+        if s_main is not None:
+            try:
+                self.split_main.restoreState(s_main)
+            except Exception:
+                pass
+        s_left = settings.value("split/left")
+        if s_left is not None:
+            try:
+                self.left_split.restoreState(s_left)
+            except Exception:
+                pass
+        s_right = settings.value("split/right")
+        if s_right is not None:
+            try:
+                self.right_split.restoreState(s_right)
+            except Exception:
+                pass
+        # AI panel internal split sizes
+        try:
+            self.ai_panel.restore_settings(settings)
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        try:
+            settings = QSettings("ScriptDeck", "ScriptDeck")
+            settings.setValue("main/geometry", self.saveGeometry())
+            settings.setValue("split/main", self.split_main.saveState())
+            settings.setValue("split/left", self.left_split.saveState())
+            settings.setValue("split/right", self.right_split.saveState())
+            # AI panel split
+            self.ai_panel.save_settings(settings)
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def _apply_filter(self, text: str):
         # 名前・タグ・説明・パスをまとめてフィルタ（大文字小文字無視／リテラル検索）
