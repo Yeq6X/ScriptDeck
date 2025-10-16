@@ -26,11 +26,14 @@ AIペインから相談するには API キーが必要です。
 
 ```
 OPENAI_API_KEY=sk-...（あなたのキー）
+# 任意: 使用するモデル（未指定時は gpt-5 を使用）
+OPENAI_MODEL=gpt-4o
 ```
 
-環境変数 `OPENAI_API_KEY` を直接設定してもOKです。
+- 環境変数 `OPENAI_API_KEY` / `OPENAI_MODEL` を直接設定してもOKです。
+- `OPENAI_MODEL` を省略した場合は既定の `gpt-5` が使われます。
 
-## 直接起動（開発者向け）
+## 直接起動
 
 ```bash
 python -m venv .venv
@@ -43,4 +46,3 @@ python main.py
 ## パッケージング（任意）
 
 配布用の実行ファイルを作るには PyInstaller 等の利用を検討してください。
-
