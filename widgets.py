@@ -172,6 +172,9 @@ class AIAssistantPanel(QWidget):
         topw = QWidget()
         top_layout = QVBoxLayout(topw)
         top_layout.addWidget(QLabel("AIへ相談（入力して送信またはCtrl+Enter）"))
+        # Show current selected script name
+        self.lbl_target = QLabel("対象スクリプト: （未選択）")
+        top_layout.addWidget(self.lbl_target)
         self.input = QTextEdit()
         self.input.setPlaceholderText("質問や指示を入力...")
         self.input.setAcceptRichText(False)
@@ -213,8 +216,22 @@ class AIAssistantPanel(QWidget):
         # 切替
         self.current_sid = sid
         self.current_path = path
+        # ラベル更新
+        self._update_target_label()
         # 復元: 新しいスクリプトの入力/出力を読み込み
         self._load_ui_state(sid)
+
+    def _update_target_label(self):
+        try:
+            if self.current_path:
+                base = Path(self.current_path).name
+                self.lbl_target.setText(f"対象スクリプト: {base}")
+                self.lbl_target.setToolTip(self.current_path)
+            else:
+                self.lbl_target.setText("対象スクリプト: （未選択）")
+                self.lbl_target.setToolTip("")
+        except Exception:
+            pass
 
     def _on_send(self):
         text = self.input.toPlainText().strip()
