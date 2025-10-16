@@ -581,6 +581,26 @@ class ScriptDetailsPanel(QWidget):
         else:
             self._probe_help_async()
 
+    def clear_selection(self):
+        """Clear current selection and reset UI to an unselected state."""
+        try:
+            self.current_sid = None
+            self.current_path = None
+            # Reset environment and working dir controls
+            try:
+                self.env_combo.setCurrentIndex(0)
+            except Exception:
+                pass
+            try:
+                self.rb_cwd_script.setChecked(True)
+                self.cwd_edit.clear()
+            except Exception:
+                pass
+            # Clear dynamic option form
+            self._clear_form()
+        except Exception:
+            pass
+
     def build_args(self) -> list[str]:
         args: list[str] = []
         for key, w in self._option_widgets.items():

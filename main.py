@@ -99,18 +99,30 @@ class MainWindow(QMainWindow):
         self.details.runRequested.connect(self._run_from_details)
         self.details.stopRequested.connect(self.runner.kill)
         self.table.selectionModel().selectionChanged.connect(self._on_selection_changed)
+        # ダブルクリックで右ペインの選択を確定/変更
+        self.table.doubleClicked.connect(self._on_double_clicked)
+
+        # Internal flag to ignore selection changes during model rebuilds
+        self._suppress_selection_changed = False
 
         self._restore_ui_state()
+        # Initial state: no script selected -> hide right pane
+        self._update_right_pane_visibility(False)
         self.load_table()
 
     # ----- Data -----
     def load_table(self):
+        # Suppress selection-changed side effects while rebuilding the model
+        self._suppress_selection_changed = True
         self.model.removeRows(0, self.model.rowCount())
         for row in fetch_all():
             self._append_row(row)
 
         self.table.resizeColumnsToContents()
         self.table.horizontalHeader().setStretchLastSection(True)
+        # 右ペインの表示状態はダブルクリックでのみ変更する（未選択になった場合のみ非表示）
+        # Re-enable selection change handling
+        self._suppress_selection_changed = False
 
     def _append_row(self, r: dict):
         items = [
@@ -240,13 +252,20 @@ class MainWindow(QMainWindow):
         return sel[0]
 
     def _on_selection_changed(self, *_):
+        # Ignore selection changes during model rebuilds
+        if getattr(self, '_suppress_selection_changed', False):
+            return
         idx = self._current_index()
         if idx is None:
+            # 未選択になった場合のみ右ペインを未選択状態にする
+            self._update_right_pane_visibility(False)
+            try:
+                if hasattr(self.details, 'clear_selection'):
+                    self.details.clear_selection()
+            except Exception:
+                pass
             return
-        sid = int(self.proxy.index(idx.row(), 0).data())
-        path = self.proxy.index(idx.row(), 2).data()
-        self.details.set_script(sid, path)
-        self.ai_panel.set_script(sid, path)
+        # 選択が変わってもダブルクリックされるまで右ペインは変更しない
 
     def _select_by_id(self, sid: int):
         # Find row in source model
@@ -257,9 +276,29 @@ class MainWindow(QMainWindow):
                 proxy_index = self.proxy.mapFromSource(src_index)
                 self.table.selectRow(proxy_index.row())
                 p = self.model.index(row, 2).data()
-                self.details.set_script(sid, p)
-                self.ai_panel.set_script(sid, p)
+                # プログラムからの選択は右ペインに反映しない（ダブルクリック時のみ反映）
                 break
+
+    def _on_double_clicked(self, index):
+        # ダブルクリックされた行を右ペインの選択として反映
+        try:
+            if not index.isValid():
+                return
+            row = index.row()
+            sid = int(self.proxy.index(row, 0).data())
+            path = self.proxy.index(row, 2).data()
+            self._update_right_pane_visibility(True)
+            self.details.set_script(sid, path)
+            self.ai_panel.set_script(sid, path)
+        except Exception:
+            pass
+
+    def _update_right_pane_visibility(self, visible: bool):
+        try:
+            self.details.setVisible(visible)
+            self.log.setVisible(visible)
+        except Exception:
+            pass
 
     # ----- Context Menu -----
     def _context_menu(self, pos):
@@ -300,18 +339,18 @@ class MainWindow(QMainWindow):
             self.load_table()
 
     def _run_from_details(self):
-        idx = self._current_index()
-        if idx is None:
-            QMessageBox.information(self, "情報", "行を選択してください")
+        # 右ペインに表示中（ダブルクリックで確定）しているスクリプトを使用
+        sid = getattr(self.details, 'current_sid', None)
+        path = getattr(self.details, 'current_path', None)
+        if sid is None or not path:
+            QMessageBox.information(self, "情報", "スクリプトが選択されていません（ダブルクリックで選択）")
             return
-        sid = int(self.proxy.index(idx.row(), 0).data())
-        path = self.proxy.index(idx.row(), 2).data()
         self.log.clear()
         args = self.details.build_args()
         pyexe = self.details.get_python_executable()
         wd = self.details.get_working_dir()
         self.details.save_current_values()
-        self.runner.run(sid, path, args=args, python_executable=pyexe, working_dir=wd)
+        self.runner.run(int(sid), path, args=args, python_executable=pyexe, working_dir=wd)
 
 def main():
     app = QApplication(sys.argv)
