@@ -15,7 +15,7 @@ from repository import (
 from runner import ScriptRunner
 from widgets import MetaEditDialog, ScriptDetailsPanel, AIAssistantPanel, CodePreviewPanel
 
-COLUMNS = ["名前", "タグ", "説明", "最終実行", "回数", "ID", "パス"]
+COLUMNS = ["名前", "タグ", "説明", "パス", "最終実行", "回数", "ID"]
 
 # Roles for tree items
 ROLE_NODE_TYPE = Qt.ItemDataRole.UserRole + 1  # 'folder' or 'script'
@@ -176,22 +176,22 @@ class MainWindow(QMainWindow):
             row_items[0].setData(int(fid), ROLE_NODE_ID)
             parent_item.appendRow(row_items)
             parent_for_children = row_items[0]
-            # Add scripts under this folder
+            # Add subfolders first (folders should appear above files)
+            for ch in by_parent.get(fid, []) or []:
+                add_folder(parent_for_children, ch)
+            # Then add scripts under this folder
             for s in scripts_in_folder(fid):
                 srow = self._make_script_row(s)
                 parent_for_children.appendRow(srow)
-            # Add subfolders
-            for ch in by_parent.get(fid, []) or []:
-                add_folder(parent_for_children, ch)
 
         root = self.model.invisibleRootItem()
-        # Root scripts
+        # Root folders first
+        for f in by_parent.get(None, []) or []:
+            add_folder(root, f)
+        # Then root scripts
         for s in scripts_in_folder(None):
             srow = self._make_script_row(s)
             root.appendRow(srow)
-        # Root folders
-        for f in by_parent.get(None, []) or []:
-            add_folder(root, f)
 
         self.table.resizeColumnToContents(0)
         self._suppress_selection_changed = False
@@ -232,14 +232,15 @@ class MainWindow(QMainWindow):
             items[2].setToolTip(self._wrap_tooltip_text(desc or ""))
         except Exception:
             pass
-        items[3].setText(last_run)
-        items[4].setText(run_count)
-        items[5].setText(str(sid))
-        items[6].setText(path)
+        # Path moves next after description
+        items[3].setText(path)
         try:
-            items[6].setToolTip(path or "")
+            items[3].setToolTip(path or "")
         except Exception:
             pass
+        items[4].setText(last_run)
+        items[5].setText(run_count)
+        items[6].setText(str(sid))
         for it in items:
             it.setEditable(False)
         items[0].setData('script', ROLE_NODE_TYPE)
@@ -281,7 +282,9 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "情報", "行を選択してください")
             return
         src = self.proxy.mapToSource(idx)
-        item = self.model.itemFromIndex(src)
+        # Normalize to column 0 so we always read roles from the first column
+        src0 = self.model.index(src.row(), 0, src.parent())
+        item = self.model.itemFromIndex(src0)
         if item is None or item.data(ROLE_NODE_TYPE) != 'script':
             QMessageBox.information(self, "情報", "スクリプトを選択してください")
             return
@@ -418,7 +421,8 @@ class MainWindow(QMainWindow):
             if not index.isValid():
                 return
             src = self.proxy.mapToSource(index)
-            item = self.model.itemFromIndex(src)
+            src0 = self.model.index(src.row(), 0, src.parent())
+            item = self.model.itemFromIndex(src0)
             if item is None:
                 return
             node_type = item.data(ROLE_NODE_TYPE)
@@ -458,10 +462,14 @@ class MainWindow(QMainWindow):
                 self._create_folder_dialog(parent_id=None)
             return
         src = self.proxy.mapToSource(idx)
-        item = self.model.itemFromIndex(src)
+        # Normalize to column 0
+        src0 = self.model.index(src.row(), 0, src.parent())
+        item = self.model.itemFromIndex(src0)
         if item is None:
             return
         node_type = item.data(ROLE_NODE_TYPE)
+        if not node_type:
+            return
         if node_type == 'folder':
             act_new = QAction("新規フォルダ...", self)
             act_rename = QAction("名前変更...", self)
@@ -470,7 +478,10 @@ class MainWindow(QMainWindow):
             menu.addAction(act_rename)
             menu.addAction(act_delete)
             action = menu.exec(self.table.viewport().mapToGlobal(pos))
-            fid = int(item.data(ROLE_NODE_ID))
+            try:
+                fid = int(item.data(ROLE_NODE_ID))
+            except Exception:
+                return
             if action == act_new:
                 self._create_folder_dialog(parent_id=fid)
             elif action == act_rename:
@@ -488,11 +499,12 @@ class MainWindow(QMainWindow):
             menu.addAction(act_edit)
             menu.addAction(act_delete)
             action = menu.exec(self.table.viewport().mapToGlobal(pos))
-            sid = int(item.data(ROLE_NODE_ID))
-            path = item.data(ROLE_PATH)
-            tags = item.data(ROLE_TAGS)
-            desc = item.data(ROLE_DESC)
             if action == act_run:
+                try:
+                    sid = int(item.data(ROLE_NODE_ID))
+                except Exception:
+                    return
+                path = item.data(ROLE_PATH)
                 self.log.clear()
                 args = self.details.build_args()
                 pyexe = self.details.get_python_executable()
@@ -500,13 +512,23 @@ class MainWindow(QMainWindow):
                 self.details.save_current_values()
                 self.runner.run(int(sid), path, args=args, python_executable=pyexe, working_dir=wd)
             elif action == act_edit:
+                try:
+                    sid = int(item.data(ROLE_NODE_ID))
+                except Exception:
+                    return
                 name = item.text()
+                tags = item.data(ROLE_TAGS)
+                desc = item.data(ROLE_DESC)
                 dlg = MetaEditDialog(name, tags, desc, self)
                 if dlg.exec() == dlg.DialogCode.Accepted:
                     n, t, d = dlg.values()
                     save_meta(int(sid), n or name, t, d)
                     self.reload_tree()
             elif action == act_delete:
+                try:
+                    sid = int(item.data(ROLE_NODE_ID))
+                except Exception:
+                    return
                 remove(int(sid))
                 self.reload_tree()
 
