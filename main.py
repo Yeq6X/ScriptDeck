@@ -65,6 +65,15 @@ class MainWindow(QMainWindow):
         self.table.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.table.setDragEnabled(True)
         self.table.setAcceptDrops(True)
+        # Allow interactive column resizing so widths can be saved/restored
+        try:
+            hdr = self.table.header()
+            hdr.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+            # Persist header state whenever user resizes or moves columns
+            hdr.sectionResized.connect(lambda *_: self._save_header_state())
+            hdr.sectionMoved.connect(lambda *_: self._save_header_state())
+        except Exception:
+            pass
         # Single-line in view with ellipsis; multi-line preview via tooltip
         try:
             self.table.setWordWrap(False)
@@ -196,7 +205,7 @@ class MainWindow(QMainWindow):
             srow = self._make_script_row(s)
             root.appendRow(srow)
 
-        self.table.resizeColumnToContents(0)
+        # Do not auto-resize columns here so restored widths persist
         self._suppress_selection_changed = False
         # Restore expanded state after rebuild
         self._restore_tree_state()
@@ -337,6 +346,20 @@ class MainWindow(QMainWindow):
                 self.right_split.restoreState(s_right)
             except Exception:
                 pass
+        # Tree header (column widths/order)
+        try:
+            hst = settings.value("tree/header")
+            if hst is not None:
+                ba = hst
+                if isinstance(hst, (bytes, bytearray)):
+                    from PyQt6.QtCore import QByteArray as _QBA
+                    ba = _QBA(bytes(hst))
+                elif isinstance(hst, str):
+                    from PyQt6.QtCore import QByteArray as _QBA
+                    ba = _QBA(hst.encode('utf-8', errors='ignore'))
+                self.table.header().restoreState(ba)
+        except Exception:
+            pass
         # AI panel internal split sizes
         try:
             self.ai_panel.restore_settings(settings)
@@ -360,6 +383,11 @@ class MainWindow(QMainWindow):
                     pass
             # Save expanded folders in tree
             self._save_tree_state(settings)
+            # Save tree header (column widths/order)
+            try:
+                settings.setValue("tree/header", self.table.header().saveState())
+            except Exception:
+                pass
         except Exception:
             pass
         super().closeEvent(event)
@@ -658,6 +686,15 @@ class MainWindow(QMainWindow):
                     if self.model.hasChildren(idx0):
                         apply(idx0)
             apply(QModelIndex())
+        except Exception:
+            pass
+
+    def _save_header_state(self, settings: QSettings | None = None):
+        try:
+            st = self.table.header().saveState()
+            if settings is None:
+                settings = QSettings("ScriptDeck", "ScriptDeck")
+            settings.setValue("tree/header", st)
         except Exception:
             pass
 
