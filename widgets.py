@@ -2,10 +2,10 @@ from PyQt6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QTextEdit, QDialogButtonBox,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
     QScrollArea, QFileDialog, QTableWidget, QTableWidgetItem, QMessageBox,
-    QRadioButton, QCompleter, QSplitter
+    QRadioButton, QCompleter, QSplitter, QPlainTextEdit
 )
-from PyQt6.QtCore import Qt, QProcess, QTimer, pyqtSignal, QStringListModel, QEvent, QObject, QThread, QSettings
-from PyQt6.QtGui import QShortcut, QKeySequence
+from PyQt6.QtCore import Qt, QProcess, QTimer, pyqtSignal, QStringListModel, QEvent, QObject, QThread, QSettings, QRect
+from PyQt6.QtGui import QShortcut, QKeySequence, QFont, QPainter
 import sys
 import os
 from pathlib import Path
@@ -324,6 +324,175 @@ class AIAssistantPanel(QWidget):
         except Exception:
             self.input.clear()
             self.output.clear()
+
+
+class LineNumberArea(QWidget):
+    def __init__(self, editor):
+        super().__init__(editor)
+        self.editor = editor
+
+    def sizeHint(self):
+        return self.editor.line_number_area_size()
+
+    def paintEvent(self, event):
+        self.editor.line_number_area_paint_event(event)
+
+
+class CodeEditor(QPlainTextEdit):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Monospace font
+        try:
+            f = QFont("Consolas")
+            f.setStyleHint(QFont.StyleHint.Monospace)
+            self.setFont(f)
+        except Exception:
+            pass
+        self.setReadOnly(True)
+        # Do not wrap long lines; enable horizontal scrolling as needed
+        try:
+            self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        except Exception:
+            pass
+        self._line_area = LineNumberArea(self)
+        self.blockCountChanged.connect(self._update_line_number_area_width)
+        self.updateRequest.connect(self._update_line_number_area)
+        self.cursorPositionChanged.connect(self._highlight_current_line)
+        self._update_line_number_area_width(0)
+        self._highlight_current_line()
+
+    def wheelEvent(self, event):
+        try:
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                hsb = self.horizontalScrollBar()
+                pd = event.pixelDelta() if hasattr(event, 'pixelDelta') else None
+                if pd and (pd.x() != 0 or pd.y() != 0):
+                    # Use vertical pixel delta as horizontal scroll when using shift
+                    hsb.setValue(hsb.value() - pd.y())
+                else:
+                    ad = event.angleDelta()
+                    dy = ad.y() if ad is not None else 0
+                    # Typical wheel notch is 120; scroll a few steps per notch
+                    steps = int(dy / 120)
+                    if steps != 0:
+                        hsb.setValue(hsb.value() - steps * max(1, hsb.singleStep()) * 3)
+                event.accept()
+                return
+        except Exception:
+            pass
+        super().wheelEvent(event)
+
+    def line_number_area_width(self) -> int:
+        digits = 1
+        try:
+            maxb = max(1, self.blockCount())
+            while (maxb := maxb // 10) > 0:
+                digits += 1
+        except Exception:
+            pass
+        fmw = self.fontMetrics().horizontalAdvance('9')
+        return int(10 + fmw * digits)
+
+    def line_number_area_size(self):
+        return self.sizeHint()
+
+    def _update_line_number_area_width(self, _):
+        try:
+            self.setViewportMargins(self.line_number_area_width(), 0, 0, 0)
+        except Exception:
+            pass
+
+    def _update_line_number_area(self, rect: QRect, dy: int):
+        try:
+            if dy:
+                self._line_area.scroll(0, dy)
+            else:
+                self._line_area.update(0, rect.y(), self._line_area.width(), rect.height())
+            if rect.contains(self.viewport().rect()):
+                self._update_line_number_area_width(0)
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        cr = self.contentsRect()
+        try:
+            self._line_area.setGeometry(QRect(cr.left(), cr.top(), self.line_number_area_width(), cr.height()))
+        except Exception:
+            pass
+
+    def line_number_area_paint_event(self, event):
+        painter = QPainter(self._line_area)
+        try:
+            painter.fillRect(event.rect(), self.palette().base())
+            block = self.firstVisibleBlock()
+            block_number = block.blockNumber()
+            top = int(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
+            bottom = top + int(self.blockBoundingRect(block).height())
+            while block.isValid() and top <= event.rect().bottom():
+                if block.isVisible() and bottom >= event.rect().top():
+                    number = str(block_number + 1)
+                    painter.setPen(self.palette().mid().color())
+                    right = self._line_area.width() - 6
+                    painter.drawText(0, top, right, self.fontMetrics().height(), Qt.AlignmentFlag.AlignRight, number)
+                block = block.next()
+                block_number += 1
+                top = bottom
+                bottom = top + int(self.blockBoundingRect(block).height())
+        finally:
+            painter.end()
+
+    def _highlight_current_line(self):
+        try:
+            from PyQt6.QtGui import QTextFormat
+            extra = []
+            if not self.isReadOnly():
+                sel = QTextEdit.ExtraSelection()
+                line_color = self.palette().alternateBase()
+                sel.format.setBackground(line_color)
+                sel.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
+                sel.cursor = self.textCursor()
+                sel.cursor.clearSelection()
+                extra.append(sel)
+            self.setExtraSelections(extra)
+        except Exception:
+            pass
+
+
+class CodePreviewPanel(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.current_sid: int | None = None
+        self.current_path: str | None = None
+
+        root = QVBoxLayout(self)
+        self.path_label = QLabel("プレビュー: （未選択）")
+        root.addWidget(self.path_label)
+        self.editor = CodeEditor(self)
+        root.addWidget(self.editor, 1)
+
+    def set_script(self, sid: int, path: str):
+        self.current_sid = sid
+        self.current_path = path
+        try:
+            self.path_label.setText(f"プレビュー: {Path(path).name}")
+            self.path_label.setToolTip(path)
+        except Exception:
+            pass
+        try:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                code = f.read()
+        except Exception as e:
+            code = f"<読み込みエラー: {e}>"
+        self.editor.setPlainText(code)
+
+    def clear_selection(self):
+        self.current_sid = None
+        self.current_path = None
+        self.path_label.setText("プレビュー: （未選択）")
+        self.path_label.setToolTip("")
+        self.editor.setPlainText("")
 
 
 class AIHistoryDialog(QDialog):

@@ -3,17 +3,17 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QTreeView, QTextEdit, QMessageBox, QAbstractItemView, QMenu,
-    QSplitter, QInputDialog, QStyle
+    QSplitter, QInputDialog, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QHeaderView, QTabWidget
 )
-from PyQt6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QSettings, QModelIndex
-from PyQt6.QtGui import QStandardItemModel, QStandardItem, QAction
+from PyQt6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QSettings, QModelIndex, QSize
+from PyQt6.QtGui import QStandardItemModel, QStandardItem, QAction, QTextDocument
 from repository import (
     import_file, import_directory, fetch_all, save_meta, remove,
     folders_all, folder_create, folder_rename, folder_delete, folder_move,
     assign_script_to_folder, scripts_in_folder
 )
 from runner import ScriptRunner
-from widgets import MetaEditDialog, ScriptDetailsPanel, AIAssistantPanel
+from widgets import MetaEditDialog, ScriptDetailsPanel, AIAssistantPanel, CodePreviewPanel
 
 COLUMNS = ["名前", "タグ", "説明", "最終実行", "回数", "ID", "パス"]
 
@@ -63,6 +63,14 @@ class MainWindow(QMainWindow):
         self.table.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.table.setDragEnabled(True)
         self.table.setAcceptDrops(True)
+        # Single-line in view with ellipsis; multi-line preview via tooltip
+        try:
+            self.table.setWordWrap(False)
+            self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
+            self.table.setUniformRowHeights(True)
+            self.table.setItemDelegate(QStyledItemDelegate(self.table))
+        except Exception:
+            pass
 
         # --- Log (will be placed under right pane) ---
         self.log = QTextEdit()
@@ -78,11 +86,15 @@ class MainWindow(QMainWindow):
         left_top_layout.addWidget(top)
         left_top_layout.addWidget(self.table, 1)
 
-        # Left pane: vertical split (top: selection UI, bottom: AI assistant)
+        # Left pane: vertical split (top: selection UI, bottom: tabs for AI and Code)
         self.ai_panel = AIAssistantPanel(self)
+        self.code_preview = CodePreviewPanel(self)
+        self.left_tabs = QTabWidget()
+        self.left_tabs.addTab(self.ai_panel, "AI")
+        self.left_tabs.addTab(self.code_preview, "コード")
         self.left_split = QSplitter(Qt.Orientation.Vertical)
         self.left_split.addWidget(left_top)
-        self.left_split.addWidget(self.ai_panel)
+        self.left_split.addWidget(self.left_tabs)
         self.left_split.setStretchFactor(0, 3)
         self.left_split.setStretchFactor(1, 2)
 
@@ -145,6 +157,10 @@ class MainWindow(QMainWindow):
         def make_row(name: str) -> list[QStandardItem]:
             row = [QStandardItem("") for _ in range(len(COLUMNS))]
             row[0].setText(name)
+            try:
+                row[0].setToolTip(name or "")
+            except Exception:
+                pass
             for it in row:
                 it.setEditable(False)
             return row
@@ -201,12 +217,29 @@ class MainWindow(QMainWindow):
             items[0].setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
         except Exception:
             pass
+        try:
+            items[0].setToolTip(name or "")
+        except Exception:
+            pass
         items[1].setText(tags)
+        try:
+            items[1].setToolTip(tags or "")
+        except Exception:
+            pass
         items[2].setText(desc)
+        # Show multi-line wrapped description in tooltip
+        try:
+            items[2].setToolTip(self._wrap_tooltip_text(desc or ""))
+        except Exception:
+            pass
         items[3].setText(last_run)
         items[4].setText(run_count)
         items[5].setText(str(sid))
         items[6].setText(path)
+        try:
+            items[6].setToolTip(path or "")
+        except Exception:
+            pass
         for it in items:
             it.setEditable(False)
         items[0].setData('script', ROLE_NODE_TYPE)
@@ -332,6 +365,25 @@ class MainWindow(QMainWindow):
         regex.setPatternOptions(QRegularExpression.PatternOption.CaseInsensitiveOption)
         self.proxy.setFilterRegularExpression(regex)
 
+    def _wrap_tooltip_text(self, text: str, width: int = 60) -> str:
+        if not text:
+            return ""
+        try:
+            w = int(width) if width and int(width) > 0 else 60
+        except Exception:
+            w = 60
+        lines = []
+        for para in str(text).splitlines() or [""]:
+            s = para
+            while len(s) > w:
+                cut = s.rfind(" ", 0, w)
+                if cut <= 0:
+                    cut = w
+                lines.append(s[:cut])
+                s = s[cut:].lstrip()
+            lines.append(s)
+        return "\n".join(lines)
+
     def _current_index(self):
         sel = self.table.selectionModel().selectedIndexes()
         if not sel:
@@ -380,6 +432,10 @@ class MainWindow(QMainWindow):
             self._update_right_pane_visibility(True)
             self.details.set_script(sid, path)
             self.ai_panel.set_script(sid, path)
+            try:
+                self.code_preview.set_script(sid, path)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -592,6 +648,49 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "エラー", str(e))
 
 
+class WrappingItemDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        try:
+            opt.textElideMode = Qt.TextElideMode.ElideNone
+            # enable word wrap if available
+            opt.features |= QStyleOptionViewItem.ViewItemFeature.WrapText
+        except Exception:
+            pass
+        style = opt.widget.style() if opt.widget else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
+
+    def sizeHint(self, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        base = super().sizeHint(option, index)
+        text = opt.text or ""
+        if not text:
+            return base
+        # Estimate width from view's column width
+        width = opt.rect.width()
+        view = self.parent()
+        try:
+            if hasattr(view, 'columnWidth'):
+                w2 = view.columnWidth(index.column())
+                if isinstance(w2, int) and w2 > 10:
+                    width = w2 - 8
+        except Exception:
+            pass
+        doc = QTextDocument()
+        try:
+            doc.setDefaultFont(opt.font)
+        except Exception:
+            pass
+        doc.setPlainText(text)
+        if width <= 0:
+            return base
+        doc.setTextWidth(width)
+        h = int(doc.size().height()) + 6
+        return QSize(base.width(), max(base.height(), h))
+
+
 class RecursiveFilterProxyModel(QSortFilterProxyModel):
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
         idx0 = self.sourceModel().index(source_row, 0, source_parent)
@@ -697,6 +796,27 @@ class ScriptTreeView(QTreeView):
             event.acceptProposedAction()
         else:
             event.ignore()
+
+    # ----- Utils -----
+    def _wrap_tooltip_text(self, text: str, width: int = 60) -> str:
+        if not text:
+            return ""
+        try:
+            w = int(width) if width and int(width) > 0 else 60
+        except Exception:
+            w = 60
+        lines = []
+        for para in str(text).splitlines() or [""]:
+            s = para
+            while len(s) > w:
+                # break at last space before limit if possible
+                cut = s.rfind(" ", 0, w)
+                if cut <= 0:
+                    cut = w
+                lines.append(s[:cut])
+                s = s[cut:].lstrip()
+            lines.append(s)
+        return "\n".join(lines)
 
 def main():
     app = QApplication(sys.argv)
