@@ -3,7 +3,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QTreeView, QTextEdit, QMessageBox, QAbstractItemView, QMenu,
-    QSplitter, QInputDialog
+    QSplitter, QInputDialog, QStyle
 )
 from PyQt6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QSettings, QModelIndex
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QAction
@@ -152,6 +152,10 @@ class MainWindow(QMainWindow):
         def add_folder(parent_item: QStandardItem, folder_row: tuple):
             fid, name, parent_id, position = folder_row
             row_items = make_row(name)
+            try:
+                row_items[0].setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+            except Exception:
+                pass
             row_items[0].setData('folder', ROLE_NODE_TYPE)
             row_items[0].setData(int(fid), ROLE_NODE_ID)
             parent_item.appendRow(row_items)
@@ -192,6 +196,11 @@ class MainWindow(QMainWindow):
             run_count = str(run_count or 0)
         items = [QStandardItem("") for _ in range(len(COLUMNS))]
         items[0].setText(name)
+        # Set a generic file icon for scripts
+        try:
+            items[0].setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
+        except Exception:
+            pass
         items[1].setText(tags)
         items[2].setText(desc)
         items[3].setText(last_run)
