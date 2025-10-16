@@ -684,6 +684,8 @@ class ScriptDetailsPanel(QWidget):
         self.current_sid: int | None = None
         self.current_path: str | None = None
         self._option_widgets: dict[str, QWidget] = {}
+        self._positional_widgets: dict[str, QWidget] = {}
+        self._positional_order: list[str] = []
         self._venv_items: list[tuple[int, str, str]] = []  # (id, name, python_path)
         self._history_models: dict[str, QStringListModel] = {}
         self._history_filters: dict[str, _HistoryEventFilter] = {}
@@ -701,6 +703,15 @@ class ScriptDetailsPanel(QWidget):
         env_row.addWidget(self.btn_manage_env)
         env_row.addWidget(self.btn_probe)
         root.addLayout(env_row)
+
+        # Python executable path display
+        py_row = QHBoxLayout()
+        py_row.addWidget(QLabel("Python:"))
+        self.env_py_path = QLineEdit()
+        self.env_py_path.setReadOnly(True)
+        self.env_py_path.setPlaceholderText("(未設定)")
+        py_row.addWidget(self.env_py_path, 1)
+        root.addLayout(py_row)
 
         # Working directory row
         wd_row = QHBoxLayout()
@@ -743,6 +754,7 @@ class ScriptDetailsPanel(QWidget):
         self.cwd_browse.clicked.connect(self._on_browse_wd)
 
         self._load_venvs()
+        self._update_env_path_display()
 
     # ----- Public API -----
     def set_script(self, sid: int, path: str):
@@ -751,6 +763,7 @@ class ScriptDetailsPanel(QWidget):
         extras = get_script_extras(sid)
         # Select venv
         self._load_venvs(select_id=extras.get("venv_id"))
+        self._update_env_path_display()
         # Working dir
         wd = extras.get("working_dir")
         if wd:
@@ -797,6 +810,14 @@ class ScriptDetailsPanel(QWidget):
 
     def build_args(self) -> list[str]:
         args: list[str] = []
+        # Positional arguments first (in declared order)
+        for name in getattr(self, '_positional_order', []):
+            w = self._positional_widgets.get(name) if hasattr(self, '_positional_widgets') else None
+            if isinstance(w, QLineEdit):
+                v = w.text().strip()
+                if v:
+                    args.append(v)
+        # Options next
         for key, w in self._option_widgets.items():
             if isinstance(w, QLineEdit):
                 v = w.text().strip()
@@ -835,6 +856,7 @@ class ScriptDetailsPanel(QWidget):
                 select_index = len(self._venv_items)
         self.env_combo.setCurrentIndex(select_index)
         self.env_combo.blockSignals(False)
+        self._update_env_path_display()
 
     def _on_env_changed(self, _idx: int):
         if self.current_sid is None:
@@ -844,6 +866,7 @@ class ScriptDetailsPanel(QWidget):
         set_script_venv(self.current_sid, venv_id)
         # Optionally re-probe on env change
         self._probe_help_async()
+        self._update_env_path_display()
 
     def _on_workdir_changed(self):
         self._update_wd_enabled()
@@ -868,11 +891,28 @@ class ScriptDetailsPanel(QWidget):
         self.cwd_edit.setEnabled(custom)
         self.cwd_browse.setEnabled(custom)
 
+    def _update_env_path_display(self):
+        try:
+            idx = self.env_combo.currentIndex()
+            if idx <= 0:
+                py = sys.executable
+            else:
+                py = self._venv_items[idx - 1][2] if (idx - 1) < len(self._venv_items) else ""
+            self.env_py_path.setText(py or "")
+            self.env_py_path.setToolTip(py or "")
+        except Exception:
+            try:
+                self.env_py_path.setText("")
+                self.env_py_path.setToolTip("")
+            except Exception:
+                pass
+
     def _on_manage_env(self):
         dlg = VenvManagerDialog(self)
         if dlg.exec() == dlg.DialogCode.Accepted:
             # refresh list
             self._load_venvs()
+            self._update_env_path_display()
 
     def _on_probe(self):
         self._probe_help_async()
@@ -885,11 +925,54 @@ class ScriptDetailsPanel(QWidget):
             if w is not None:
                 w.deleteLater()
         self._option_widgets.clear()
+        self._positional_widgets.clear()
+        self._positional_order.clear()
         self._history_models.clear()
         self._history_filters.clear()
 
     def _build_form(self, schema: dict, values: dict):
         self._clear_form()
+        # 位置引数（positional arguments）
+        positionals = schema.get("positionals", []) if isinstance(schema, dict) else []
+        for pos in positionals:
+            name = pos.get("name")
+            if not name:
+                continue
+            label = QLabel(name)
+            w = QLineEdit()
+            val = values.get(name)
+            if isinstance(val, str):
+                w.setText(val)
+            # 履歴のコンプリート（任意）
+            if self.current_sid is not None:
+                items = list_option_history(self.current_sid, name, limit=20)
+            else:
+                items = []
+            model = QStringListModel(items, self)
+            completer = QCompleter(model, self)
+            try:
+                completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+                completer.setFilterMode(Qt.MatchFlag.MatchContains)
+                completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+            except Exception:
+                pass
+            w.setCompleter(completer)
+            popup = completer.popup()
+            ef = _HistoryEventFilter(self.current_sid or -1, name, model, self)
+            popup.installEventFilter(ef)
+            self._history_models[name] = model
+            self._history_filters[name] = ef
+            cc = _CompleterController(w, completer, self)
+            w.installEventFilter(cc)
+            try:
+                w.textChanged.connect(cc.on_text_changed)
+            except Exception:
+                pass
+            self._completer_ctrls[name] = cc
+            self._positional_widgets[name] = w
+            self._positional_order.append(name)
+            self.form.addRow(label, w)
+
         options = schema.get("options", []) if isinstance(schema, dict) else []
         for opt in options:
             name = opt.get("name") or opt.get("long") or opt.get("short")
@@ -1077,73 +1160,95 @@ class ScriptDetailsPanel(QWidget):
         return result
 
     def _parse_help_to_schema(self, help_text: str) -> dict:
-        # Very simple heuristic parser for argparse-like help
+        # Heuristic parser for argparse-like help with sections
         options: list[dict] = []
+        positionals: list[dict] = []
         seen = set()
+        section: str | None = None
         for raw in help_text.splitlines():
             line = raw.rstrip()
-            if not line.strip().startswith("-"):
+            s = line.strip()
+            if not s:
                 continue
-            # split into option part and description by double spaces
-            parts = [p for p in line.strip().split("  ") if p]
-            if not parts:
-                continue
-            opt_part = parts[0]
-            desc = " ".join(parts[1:]) if len(parts) > 1 else ""
-            # split by comma between short and long
-            names = [p.strip() for p in opt_part.split(",")]
-            long_name = None
-            short_name = None
-            takes_value = False
-            metavar = None
-            default_val = None
-            for nm in names:
-                # separate name and metavar by space if any
-                tokens = nm.split()
-                if not tokens:
-                    continue
-                name_tok = tokens[0]
-                mv = tokens[1] if len(tokens) > 1 else None
-                if name_tok.startswith("--"):
-                    long_name = name_tok
-                elif name_tok.startswith("-"):
-                    short_name = name_tok
-                if mv and mv.upper() == mv:
-                    takes_value = True
-                    metavar = mv
-                if "=" in name_tok:
-                    takes_value = True
-            # Heuristic default extraction from description
-            if desc:
-                m = re.search(r"[\[(]\s*default\s*[:=]\s*([^)\]]+)", desc, re.IGNORECASE)
-                if m:
-                    default_val = m.group(1).strip().strip(',.; ')
+            lower = s.lower()
+            if lower.endswith(":"):
+                if "positional" in lower or "位置引数" in lower:
+                    section = "positional"
+                elif "optional" in lower or "options" in lower or "オプション" in lower:
+                    section = "options"
                 else:
-                    m2 = re.search(r"defaults?\s+to\s+([^.;,\]]+)", desc, re.IGNORECASE)
-                    if m2:
-                        default_val = m2.group(1).strip().strip(',.; ')
-            key = long_name or short_name
-            if not key or key in seen:
+                    section = None
                 continue
-            seen.add(key)
-            try:
-                pass
-            except Exception:
-                pass
-            options.append({
-                "name": key,
-                "long": long_name,
-                "short": short_name,
-                "takes_value": takes_value,
-                "metavar": metavar,
-                "default": default_val,
-            })
-        return {"options": options}
+            if section == "positional":
+                # Format: NAME  description
+                parts = [p for p in s.split("  ") if p]
+                if not parts:
+                    continue
+                name = parts[0].strip()
+                if not name or name.startswith("-"):
+                    continue
+                desc = " ".join(parts[1:]) if len(parts) > 1 else ""
+                positionals.append({"name": name, "help": desc})
+                continue
+            # Options section or generic fallback for lines starting with '-'
+            if section == "options" or s.startswith("-"):
+                parts = [p for p in s.split("  ") if p]
+                if not parts:
+                    continue
+                opt_part = parts[0]
+                desc = " ".join(parts[1:]) if len(parts) > 1 else ""
+                names = [p.strip() for p in opt_part.split(",")]
+                long_name = None
+                short_name = None
+                takes_value = False
+                metavar = None
+                default_val = None
+                for nm in names:
+                    tokens = nm.split()
+                    if not tokens:
+                        continue
+                    name_tok = tokens[0]
+                    mv = tokens[1] if len(tokens) > 1 else None
+                    if name_tok.startswith("--"):
+                        long_name = name_tok
+                    elif name_tok.startswith("-"):
+                        short_name = name_tok
+                    if mv and mv.upper() == mv:
+                        takes_value = True
+                        metavar = mv
+                    if "=" in name_tok:
+                        takes_value = True
+                if desc:
+                    m = re.search(r"[\[(]\s*default\s*[:=]\s*([^)\]]+)", desc, re.IGNORECASE)
+                    if m:
+                        default_val = m.group(1).strip().strip(',.; ')
+                    else:
+                        m2 = re.search(r"defaults?\s+to\s+([^.;,\]]+)", desc, re.IGNORECASE)
+                        if m2:
+                            default_val = m2.group(1).strip().strip(',.; ')
+                key = long_name or short_name
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                options.append({
+                    "name": key,
+                    "long": long_name,
+                    "short": short_name,
+                    "takes_value": takes_value,
+                    "metavar": metavar,
+                    "default": default_val,
+                })
+        return {"positionals": positionals, "options": options}
 
     def save_current_values(self):
         if self.current_sid is None:
             return
         values: dict[str, object] = {}
+        # Save positional arguments first
+        for name in self._positional_order:
+            w = self._positional_widgets.get(name)
+            if isinstance(w, QLineEdit):
+                values[name] = w.text().strip()
         for key, w in self._option_widgets.items():
             if isinstance(w, QLineEdit):
                 val = w.text().strip()
