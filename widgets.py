@@ -70,6 +70,31 @@ class _HistoryEventFilter(QObject):
         return False
 
 
+class _CompleterController(QObject):
+    def __init__(self, line_edit: QLineEdit, completer: QCompleter, parent=None):
+        super().__init__(parent)
+        self.line_edit = line_edit
+        self.completer = completer
+
+    def eventFilter(self, obj, event):
+        if obj is self.line_edit and event.type() == QEvent.Type.FocusIn:
+            # Show all suggestions when focusing empty input
+            if not self.line_edit.text().strip():
+                try:
+                    self.completer.setCompletionPrefix("")
+                except Exception:
+                    pass
+                self.completer.complete()
+        return False
+
+    def on_text_changed(self, text: str):
+        if not text:
+            try:
+                self.completer.setCompletionPrefix("")
+            except Exception:
+                pass
+            self.completer.complete()
+
 class _AIWorker(QObject):
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
@@ -468,6 +493,7 @@ class ScriptDetailsPanel(QWidget):
         self._venv_items: list[tuple[int, str, str]] = []  # (id, name, python_path)
         self._history_models: dict[str, QStringListModel] = {}
         self._history_filters: dict[str, _HistoryEventFilter] = {}
+        self._completer_ctrls: dict[str, _CompleterController] = {}
 
         root = QVBoxLayout(self)
 
@@ -675,6 +701,10 @@ class ScriptDetailsPanel(QWidget):
                     completer.setFilterMode(Qt.MatchFlag.MatchContains)
                 except Exception:
                     pass
+                try:
+                    completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+                except Exception:
+                    pass
                 w.setCompleter(completer)
                 # Install Shift+Delete handler on popup
                 popup = completer.popup()
@@ -682,6 +712,14 @@ class ScriptDetailsPanel(QWidget):
                 popup.installEventFilter(ef)
                 self._history_models[name] = model
                 self._history_filters[name] = ef
+                # Show all suggestions when empty
+                cc = _CompleterController(w, completer, self)
+                w.installEventFilter(cc)
+                try:
+                    w.textChanged.connect(cc.on_text_changed)
+                except Exception:
+                    pass
+                self._completer_ctrls[name] = cc
                 # Seed default into history (if parsed and not present)
                 try:
                     default_val = opt.get("default")
