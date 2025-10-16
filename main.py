@@ -216,6 +216,12 @@ class MainWindow(QMainWindow):
             settings.setValue("split/right", self.right_split.saveState())
             # AI panel split
             self.ai_panel.save_settings(settings)
+            # Save current AI UI state for the selected script
+            if getattr(self.ai_panel, 'current_sid', None) is not None:
+                try:
+                    self.ai_panel._save_ui_state(self.ai_panel.current_sid)
+                except Exception:
+                    pass
         except Exception:
             pass
         super().closeEvent(event)

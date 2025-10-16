@@ -36,6 +36,14 @@ CREATE TABLE IF NOT EXISTS option_history (
   use_count INTEGER DEFAULT 1,
   UNIQUE(script_id, option, value)
 );
+
+CREATE TABLE IF NOT EXISTS ai_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  script_id INTEGER NOT NULL,
+  question TEXT NOT NULL,
+  answer TEXT NOT NULL,
+  created_at TEXT DEFAULT NULL
+);
 """
 
 def get_conn() -> sqlite3.Connection:
@@ -218,3 +226,33 @@ def delete_option_history(script_id: int, option: str, value: str):
             "DELETE FROM option_history WHERE script_id=? AND option=? AND value=?",
             (script_id, option, value),
         )
+
+# ----- AI Q&A history -----
+def add_ai_history(script_id: int, question: str, answer: str, keep: int = 100):
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO ai_history(script_id, question, answer, created_at) VALUES(?,?,?,?)",
+            (script_id, question, answer, now),
+        )
+        # prune old rows keeping the latest 'keep'
+        conn.execute(
+            """
+            DELETE FROM ai_history
+            WHERE script_id=? AND id NOT IN (
+              SELECT id FROM ai_history WHERE script_id=? ORDER BY created_at DESC, id DESC LIMIT ?
+            )
+            """,
+            (script_id, script_id, keep),
+        )
+
+def list_ai_history(script_id: int, limit: int = 100):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT id, created_at, question, answer FROM ai_history WHERE script_id=? ORDER BY created_at DESC, id DESC LIMIT ?",
+            (script_id, limit),
+        ).fetchall()
+
+def delete_ai_history(entry_id: int):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM ai_history WHERE id=?", (entry_id,))

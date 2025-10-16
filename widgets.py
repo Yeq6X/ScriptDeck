@@ -13,8 +13,30 @@ import json
 from db import (
     list_venvs, upsert_venv, delete_venv, get_script_extras, update_args_schema,
     update_args_values, set_script_venv, get_venv, set_working_dir,
-    list_option_history, upsert_option_history, delete_option_history
+    list_option_history, upsert_option_history, delete_option_history,
+    add_ai_history, list_ai_history
 )
+
+# Module-level helper to get OpenAI API key
+def get_openai_api_key() -> str | None:
+    key = os.environ.get("OPENAI_API_KEY")
+    if key:
+        return key
+    env_path = Path.cwd() / ".env"
+    if env_path.exists():
+        try:
+            for line in env_path.read_text(encoding='utf-8', errors='ignore').splitlines():
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                k, v = line.split('=', 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                os.environ.setdefault(k, v)
+            return os.environ.get("OPENAI_API_KEY")
+        except Exception:
+            return None
+    return None
 
 
 class _HistoryEventFilter(QObject):
@@ -132,7 +154,9 @@ class AIAssistantPanel(QWidget):
         bottomw = QWidget()
         bottom_layout = QVBoxLayout(bottomw)
         ctrl = QHBoxLayout()
+        self.btn_history = QPushButton("履歴...")
         self.btn_send = QPushButton("送信")
+        ctrl.addWidget(self.btn_history)
         ctrl.addStretch(1)
         ctrl.addWidget(self.btn_send)
         bottom_layout.addLayout(ctrl)
@@ -149,14 +173,21 @@ class AIAssistantPanel(QWidget):
         self.split.setSizes([top_h, 300])
 
         self.btn_send.clicked.connect(self._on_send)
+        self.btn_history.clicked.connect(self._on_history)
         sc = QShortcut(QKeySequence("Ctrl+Return"), self)
         sc.activated.connect(self._on_send)
         sc2 = QShortcut(QKeySequence("Ctrl+Enter"), self)
         sc2.activated.connect(self._on_send)
 
     def set_script(self, sid: int, path: str):
+        # 保存: 現在のスクリプトの入力/出力を保持
+        if self.current_sid is not None:
+            self._save_ui_state(self.current_sid)
+        # 切替
         self.current_sid = sid
         self.current_path = path
+        # 復元: 新しいスクリプトの入力/出力を読み込み
+        self._load_ui_state(sid)
 
     def _on_send(self):
         text = self.input.toPlainText().strip()
@@ -165,7 +196,8 @@ class AIAssistantPanel(QWidget):
         if not self.current_path:
             QMessageBox.information(self, "情報", "スクリプトが選択されていません")
             return
-        api_key = self._get_api_key()
+        # Prefer module-level resolver for robustness
+        api_key = get_openai_api_key()
         if not api_key:
             QMessageBox.warning(self, "APIキー未設定", ".env または環境変数 OPENAI_API_KEY を設定してください")
             return
@@ -188,11 +220,36 @@ class AIAssistantPanel(QWidget):
         # 直近の回答のみを表示
         self.output.setPlainText(content)
         self.btn_send.setEnabled(True)
+        # Save Q&A per script
+        try:
+            if self.current_sid is not None:
+                q = self.input.toPlainText().strip()
+                add_ai_history(self.current_sid, q, content)
+        except Exception:
+            pass
+        # Persist UI state (per script)
+        if self.current_sid is not None:
+            self._save_ui_state(self.current_sid)
 
     def _on_error(self, msg: str):
         # エラーも置き換え表示
         self.output.setPlainText("[エラー]\n" + msg)
         self.btn_send.setEnabled(True)
+        # Persist UI state as well so user can revisit
+        if self.current_sid is not None:
+            self._save_ui_state(self.current_sid)
+
+    def _on_history(self):
+        if self.current_sid is None:
+            QMessageBox.information(self, "情報", "スクリプトが選択されていません")
+            return
+        dlg = AIHistoryDialog(self.current_sid, self)
+        if dlg.exec() == dlg.DialogCode.Accepted and dlg.selected_question:
+            self.input.setPlainText(dlg.selected_question)
+            if dlg.selected_answer is not None:
+                self.output.setPlainText(dlg.selected_answer)
+            # persist immediately so切替後も復元される
+            self._save_ui_state(self.current_sid)
 
     def _cleanup_worker(self, *args):
         try:
@@ -204,26 +261,86 @@ class AIAssistantPanel(QWidget):
         self._thread = None
         self._worker = None
 
-    def _get_api_key(self) -> str | None:
-        key = os.environ.get("OPENAI_API_KEY")
-        if key:
-            return key
-        # try to load from .env in cwd
-        env_path = Path.cwd() / ".env"
-        if env_path.exists():
-            try:
-                for line in env_path.read_text(encoding='utf-8', errors='ignore').splitlines():
-                    line = line.strip()
-                    if not line or line.startswith('#') or '=' not in line:
-                        continue
-                    k, v = line.split('=', 1)
-                    k = k.strip()
-                    v = v.strip().strip('"').strip("'")
-                    os.environ.setdefault(k, v)
-                return os.environ.get("OPENAI_API_KEY")
-            except Exception:
-                return None
-        return None
+    # ----- Per-script UI state (question/answer) -----
+    def _save_ui_state(self, sid: int):
+        try:
+            settings = QSettings("ScriptDeck", "ScriptDeck")
+            settings.setValue(f"ai/ui/{sid}/question", self.input.toPlainText())
+            settings.setValue(f"ai/ui/{sid}/answer", self.output.toPlainText())
+        except Exception:
+            pass
+
+    def _load_ui_state(self, sid: int):
+        try:
+            settings = QSettings("ScriptDeck", "ScriptDeck")
+            q = settings.value(f"ai/ui/{sid}/question")
+            a = settings.value(f"ai/ui/{sid}/answer")
+            self.input.setPlainText(q if isinstance(q, str) else "")
+            self.output.setPlainText(a if isinstance(a, str) else "")
+        except Exception:
+            self.input.clear()
+            self.output.clear()
+
+
+class AIHistoryDialog(QDialog):
+    def __init__(self, script_id: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("AI履歴")
+        self.script_id = script_id
+        self.selected_question: str | None = None
+        self.selected_answer: str | None = None
+        layout = QVBoxLayout(self)
+        self.table = QTableWidget(0, 3, self)
+        self.table.setHorizontalHeaderLabels(["日時", "質問", "プレビュー"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSelectionBehavior(self.table.SelectionBehavior.SelectRows)
+        layout.addWidget(self.table, 2)
+        self.answer = QTextEdit()
+        self.answer.setReadOnly(True)
+        layout.addWidget(self.answer, 3)
+        btns = QHBoxLayout()
+        self.btn_use = QPushButton("この質問を入力へ")
+        self.btn_close = QPushButton("閉じる")
+        btns.addWidget(self.btn_use)
+        btns.addStretch(1)
+        btns.addWidget(self.btn_close)
+        layout.addLayout(btns)
+        self.btn_close.clicked.connect(self.reject)
+        self.btn_use.clicked.connect(self._use_selected)
+        self.table.itemSelectionChanged.connect(self._on_sel)
+        self._load()
+
+    def _load(self):
+        rows = list_ai_history(self.script_id, limit=100)
+        self.table.setRowCount(0)
+        for (hid, created_at, question, answer) in rows:
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            self.table.setItem(r, 0, QTableWidgetItem(created_at or ""))
+            self.table.setItem(r, 1, QTableWidgetItem((question or "")[:200]))
+            self.table.setItem(r, 2, QTableWidgetItem((answer or "").replace('\n',' ')[:200]))
+            # store full answer in item data for retrieval
+            self.table.item(r, 0).setData(Qt.ItemDataRole.UserRole, answer)
+            self.table.item(r, 1).setData(Qt.ItemDataRole.UserRole, question)
+
+    def _on_sel(self):
+        sel = self.table.currentRow()
+        if sel < 0:
+            self.answer.clear()
+            return
+        ans = self.table.item(sel, 0).data(Qt.ItemDataRole.UserRole)
+        self.answer.setPlainText(ans or "")
+
+    def _use_selected(self):
+        sel = self.table.currentRow()
+        if sel < 0:
+            return
+        q = self.table.item(sel, 1).data(Qt.ItemDataRole.UserRole)
+        a = self.table.item(sel, 0).data(Qt.ItemDataRole.UserRole)
+        self.selected_question = q or ""
+        self.selected_answer = a or ""
+        self.accept()
+
 
     # ----- Settings -----
     def save_settings(self, settings: QSettings):
