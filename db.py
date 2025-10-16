@@ -77,6 +77,34 @@ def _ensure_schema(conn: sqlite3.Connection):
             conn.execute("ALTER TABLE scripts ADD COLUMN working_dir TEXT DEFAULT NULL")
         except Exception:
             pass
+    # Folders table and scripts.folder_id
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS folders (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          parent_id INTEGER NULL REFERENCES folders(id) ON DELETE CASCADE,
+          position INTEGER NOT NULL DEFAULT 0,
+          UNIQUE(parent_id, name)
+        );
+        """
+    )
+    # Add folder_id column for scripts if missing
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(scripts)").fetchall()}
+    if 'folder_id' not in cols:
+        try:
+            conn.execute("ALTER TABLE scripts ADD COLUMN folder_id INTEGER DEFAULT NULL REFERENCES folders(id) ON DELETE SET NULL")
+        except Exception:
+            pass
+    # Indexes
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id)")
+    except Exception:
+        pass
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_scripts_folder ON scripts(folder_id)")
+    except Exception:
+        pass
 
 def upsert_script(name: str, path: str, tags: str = "", description: str = "") -> int:
     with get_conn() as conn:
@@ -96,7 +124,7 @@ def upsert_script(name: str, path: str, tags: str = "", description: str = "") -
 def list_scripts() -> Iterable[Tuple]:
     with get_conn() as conn:
         return conn.execute(
-            "SELECT id, name, path, tags, description, last_run, run_count FROM scripts ORDER BY id DESC"
+            "SELECT id, name, path, tags, description, last_run, run_count, folder_id FROM scripts ORDER BY id DESC"
         ).fetchall()
 
 def update_meta(sid: int, name: str, tags: str, description: str):
@@ -116,6 +144,73 @@ def bump_run(sid: int, run_time_iso: str):
 def delete_script(sid: int):
     with get_conn() as conn:
         conn.execute("DELETE FROM scripts WHERE id=?", (sid,))
+
+# ----- Folders -----
+def list_folders(parent_id: Optional[int] = None) -> Iterable[Tuple]:
+    with get_conn() as conn:
+        if parent_id is None:
+            return conn.execute(
+                "SELECT id, name, parent_id, position FROM folders WHERE parent_id IS NULL ORDER BY position, name"
+            ).fetchall()
+        else:
+            return conn.execute(
+                "SELECT id, name, parent_id, position FROM folders WHERE parent_id=? ORDER BY position, name",
+                (parent_id,),
+            ).fetchall()
+
+def list_all_folders() -> Iterable[Tuple]:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT id, name, parent_id, position FROM folders ORDER BY parent_id NULLS FIRST, position, name"
+        ).fetchall()
+
+def create_folder(name: str, parent_id: Optional[int] = None) -> int:
+    with get_conn() as conn:
+        # Determine next position within the parent
+        if parent_id is None:
+            row = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM folders WHERE parent_id IS NULL").fetchone()
+        else:
+            row = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM folders WHERE parent_id=?", (parent_id,)).fetchone()
+        pos = row[0] if row else 0
+        cur = conn.execute(
+            "INSERT INTO folders(name, parent_id, position) VALUES(?,?,?)",
+            (name, parent_id, pos),
+        )
+        return cur.lastrowid
+
+def rename_folder(folder_id: int, name: str):
+    with get_conn() as conn:
+        conn.execute("UPDATE folders SET name=? WHERE id=?", (name, folder_id))
+
+def delete_folder(folder_id: int):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM folders WHERE id=?", (folder_id,))
+
+def move_folder(folder_id: int, new_parent_id: Optional[int], new_position: Optional[int] = None):
+    with get_conn() as conn:
+        if new_position is None:
+            if new_parent_id is None:
+                row = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM folders WHERE parent_id IS NULL").fetchone()
+            else:
+                row = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM folders WHERE parent_id=?", (new_parent_id,)).fetchone()
+            new_position = row[0] if row else 0
+        conn.execute("UPDATE folders SET parent_id=?, position=? WHERE id=?", (new_parent_id, new_position, folder_id))
+
+def assign_script_folder(script_id: int, folder_id: Optional[int]):
+    with get_conn() as conn:
+        conn.execute("UPDATE scripts SET folder_id=? WHERE id=?", (folder_id, script_id))
+
+def list_scripts_in_folder(folder_id: Optional[int]) -> Iterable[Tuple]:
+    with get_conn() as conn:
+        if folder_id is None:
+            return conn.execute(
+                "SELECT id, name, path, tags, description, last_run, run_count, folder_id FROM scripts WHERE folder_id IS NULL ORDER BY name"
+            ).fetchall()
+        else:
+            return conn.execute(
+                "SELECT id, name, path, tags, description, last_run, run_count, folder_id FROM scripts WHERE folder_id=? ORDER BY name",
+                (folder_id,),
+            ).fetchall()
 
 # ----- Script extras (args schema/values, venv) -----
 def get_script_extras(sid: int) -> Dict[str, Any]:
