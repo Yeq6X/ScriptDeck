@@ -223,14 +223,16 @@ class MainWindow(QMainWindow):
             sid, name, path, tags, desc, last_run, run_count, _folder_id = r
             run_count = str(run_count or 0)
         items = [QStandardItem("") for _ in range(len(COLUMNS))]
-        items[0].setText(name)
+        # Ensure display shows .py extension for clarity
+        display_name = name if str(name).lower().endswith('.py') else (name + '.py' if name else name)
+        items[0].setText(display_name)
         # Set a generic file icon for scripts
         try:
             items[0].setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
         except Exception:
             pass
         try:
-            items[0].setToolTip(name or "")
+            items[0].setToolTip(display_name or "")
         except Exception:
             pass
         items[1].setText(tags)

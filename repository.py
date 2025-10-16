@@ -13,7 +13,8 @@ def import_file(path: Path, name: Optional[str] = None, tags: str = "", descript
     path = path.expanduser().resolve()
     if not path.exists() or path.suffix.lower() not in PY_EXTS:
         raise ValueError("Pythonスクリプト(.py)のみ対応です")
-    sid = upsert_script(name or path.stem, str(path), tags, description)
+    # Default to filename WITH extension (e.g., my_script.py)
+    sid = upsert_script(name or path.name, str(path), tags, description)
     if folder_id is not None:
         try:
             assign_script_folder(sid, int(folder_id))
@@ -29,7 +30,8 @@ def import_directory(dir_path: Path, recurse: bool = True, folder_id: Optional[i
     walker = dir_path.rglob("*.py") if recurse else dir_path.glob("*.py")
     for p in walker:
         try:
-            sid = upsert_script(p.stem, str(p), "", "")
+            # Store filename with extension for clarity in the list view
+            sid = upsert_script(p.name, str(p), "", "")
             if folder_id is not None:
                 try:
                     assign_script_folder(sid, int(folder_id))
