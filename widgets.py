@@ -171,7 +171,8 @@ class AIAssistantPanel(QWidget):
             return
         # Disable while running
         self.btn_send.setEnabled(False)
-        self.output.append("[送信中] OpenAIへ問い合わせ中...\n")
+        # 直近の回答だけを表示するためにクリアして送信中メッセージを表示
+        self.output.setPlainText("[送信中] OpenAIへ問い合わせ中...\n")
         # Start worker thread
         self._thread = QThread(self)
         self._worker = _AIWorker(api_key, text, self.current_path)
@@ -184,11 +185,13 @@ class AIAssistantPanel(QWidget):
         self._thread.start()
 
     def _on_finished(self, content: str):
-        self.output.append("\n[回答]\n" + content + "\n")
+        # 直近の回答のみを表示
+        self.output.setPlainText(content)
         self.btn_send.setEnabled(True)
 
     def _on_error(self, msg: str):
-        self.output.append("\n[エラー]\n" + msg + "\n")
+        # エラーも置き換え表示
+        self.output.setPlainText("[エラー]\n" + msg)
         self.btn_send.setEnabled(True)
 
     def _cleanup_worker(self, *args):
