@@ -1,6 +1,7 @@
 # ScriptDeck
 
 シンプルなスクリプトランチャー（PyQt6）。スクリプト一覧から選択して、右ペインで実行設定（venv・作業ディレクトリ・引数）をして実行できます。AI相談ペインから選択中スクリプトと質問をOpenAIに投げることも可能です。
+<img width="1711" height="1047" alt="image" src="https://github.com/user-attachments/assets/853d8713-97de-4682-b243-07bccd262fce" />
 
 ## 起動
 
