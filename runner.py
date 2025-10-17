@@ -1,7 +1,7 @@
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from PyQt6.QtCore import QObject, pyqtSignal, QProcess
+from PyQt6.QtCore import QObject, pyqtSignal, QProcess, QProcessEnvironment
 from db import bump_run
 
 class ScriptRunner(QObject):
@@ -22,9 +22,18 @@ class ScriptRunner(QObject):
         args = args or []
         self.current_sid = sid
         self.proc = QProcess(self)
+        # Ensure Python output is unbuffered for real-time logs
+        try:
+            env = QProcessEnvironment.systemEnvironment()
+            env.insert("PYTHONUNBUFFERED", "1")
+            self.proc.setProcessEnvironment(env)
+        except Exception:
+            pass
         prog = python_executable or sys.executable
         self.proc.setProgram(prog)
-        self.proc.setArguments([script_path, *args])
+        # Force unbuffered mode (-u) so stdout/stderr flush immediately
+        py_args = ["-u", script_path, *args]
+        self.proc.setArguments(py_args)
         wd = working_dir or str(Path(script_path).parent)
         self.proc.setWorkingDirectory(wd)
 
@@ -36,7 +45,7 @@ class ScriptRunner(QObject):
         )
         self.proc.finished.connect(self._on_finished)
 
-        cmdline = f"{prog} {script_path} " + " ".join(args)
+        cmdline = f"{prog} -u {script_path} " + " ".join(args)
         if wd:
             cmdline += f" (cwd={wd})"
         self.started.emit(sid, cmdline)

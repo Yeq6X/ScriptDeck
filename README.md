@@ -44,6 +44,10 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## リアルタイムログ（長時間実行/Gradioなど）
+
+ScriptDeck は実行時に Python をアンバッファ（`-u` と `PYTHONUNBUFFERED=1`）で起動するため、標準出力/標準エラーがリアルタイムに右ペインへ表示されます。もし依然として出力が遅延する場合は、スクリプト側で `print(..., flush=True)` を使うか、`sys.stdout.reconfigure(line_buffering=True)` を検討してください。
+
 ## パッケージング（任意）
 
 配布用の実行ファイルを作るには PyInstaller 等の利用を検討してください。

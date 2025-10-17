@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QInputDialog, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QHeaderView, QTabWidget
 )
 from PyQt6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QSettings, QModelIndex, QSize
-from PyQt6.QtGui import QStandardItemModel, QStandardItem, QAction, QTextDocument
+from PyQt6.QtGui import QStandardItemModel, QStandardItem, QAction, QTextDocument, QTextCursor
 from repository import (
     import_file, import_directory, fetch_all, save_meta, remove,
     folders_all, folder_create, folder_rename, folder_delete, folder_move,
@@ -126,8 +126,8 @@ class MainWindow(QMainWindow):
         # Runner
         self.runner = ScriptRunner(self)
         self.runner.started.connect(self.on_started)
-        self.runner.stdout.connect(lambda s: self.log.insertPlainText(s))
-        self.runner.stderr.connect(lambda s: self.log.insertPlainText(s))
+        self.runner.stdout.connect(self._append_log)
+        self.runner.stderr.connect(self._append_log)
         self.runner.finished.connect(self.on_finished)
 
         # Signals
@@ -344,6 +344,19 @@ class MainWindow(QMainWindow):
         self.reload_tree()
         if sid is not None and sid >= 0:
             self._select_by_id(sid)
+
+    def _append_log(self, s: str):
+        try:
+            # Insert and keep view pinned to the bottom for real-time logs
+            self.log.moveCursor(QTextCursor.MoveOperation.End)
+            self.log.insertPlainText(s)
+            self.log.moveCursor(QTextCursor.MoveOperation.End)
+        except Exception:
+            # Fallback
+            try:
+                self.log.insertPlainText(s)
+            except Exception:
+                pass
 
     # ----- Settings persistence -----
     def _restore_ui_state(self):
