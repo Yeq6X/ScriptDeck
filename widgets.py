@@ -713,6 +713,15 @@ class ScriptDetailsPanel(QWidget):
         py_row.addWidget(self.env_py_path, 1)
         root.addLayout(py_row)
 
+        # Script path display
+        sp_row = QHBoxLayout()
+        sp_row.addWidget(QLabel("スクリプト:"))
+        self.script_path_edit = QLineEdit()
+        self.script_path_edit.setReadOnly(True)
+        self.script_path_edit.setPlaceholderText("(未選択)")
+        sp_row.addWidget(self.script_path_edit, 1)
+        root.addLayout(sp_row)
+
         # Working directory row
         wd_row = QHBoxLayout()
         wd_row.addWidget(QLabel("作業ディレクトリ:"))
@@ -764,6 +773,11 @@ class ScriptDetailsPanel(QWidget):
         # Select venv
         self._load_venvs(select_id=extras.get("venv_id"))
         self._update_env_path_display()
+        try:
+            self.script_path_edit.setText(path or "")
+            self.script_path_edit.setToolTip(path or "")
+        except Exception:
+            pass
         # Working dir
         wd = extras.get("working_dir")
         if wd:
@@ -805,6 +819,11 @@ class ScriptDetailsPanel(QWidget):
                 pass
             # Clear dynamic option form
             self._clear_form()
+            try:
+                self.script_path_edit.setText("")
+                self.script_path_edit.setToolTip("")
+            except Exception:
+                pass
         except Exception:
             pass
 
