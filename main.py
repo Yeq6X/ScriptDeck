@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QInputDialog, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QHeaderView, QTabWidget
 )
 from PyQt6.QtCore import Qt, QSortFilterProxyModel, QRegularExpression, QSettings, QModelIndex, QSize
-from PyQt6.QtGui import QStandardItemModel, QStandardItem, QAction, QTextDocument, QTextCursor
+from PyQt6.QtGui import QStandardItemModel, QStandardItem, QAction, QTextDocument, QTextCursor, QColor
 from repository import (
     import_file, import_directory, fetch_all, save_meta, remove,
     folders_all, folder_create, folder_rename, folder_delete, folder_move,
@@ -79,7 +79,7 @@ class MainWindow(QMainWindow):
             self.table.setWordWrap(False)
             self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
             self.table.setUniformRowHeights(True)
-            self.table.setItemDelegate(QStyledItemDelegate(self.table))
+            self.table.setItemDelegate(RunningIndicatorDelegate(self, self.table))
         except Exception:
             pass
 
@@ -139,7 +139,7 @@ class MainWindow(QMainWindow):
         btn_import.clicked.connect(self.import_folder)
         # 実行/停止は右ペインのボタンから制御
         self.details.runRequested.connect(self._run_from_details)
-        self.details.stopRequested.connect(self.runner.kill)
+        self.details.stopRequested.connect(self._stop_current_run)
         self.table.selectionModel().selectionChanged.connect(self._on_selection_changed)
         # ダブルクリックで右ペインの選択を確定/変更
         self.table.doubleClicked.connect(self._on_double_clicked)
@@ -149,6 +149,7 @@ class MainWindow(QMainWindow):
         # Internal flag to ignore selection changes during model rebuilds
         self._suppress_selection_changed = False
 
+        self._running_sids: set[int] = set()
         self._restore_ui_state()
         # Initial state: no script selected -> hide right pane
         self._update_right_pane_visibility(False)
@@ -340,9 +341,19 @@ class MainWindow(QMainWindow):
 
     def on_started(self, sid: int, cmdline: str):
         self._append_log(sid, f"[RUN] {cmdline}\n")
+        try:
+            self._running_sids.add(int(sid))
+            self.table.viewport().update()
+        except Exception:
+            pass
 
     def on_finished(self, sid: int, exitCode: int):
         self._append_log(sid, f"\n[EXIT] code={exitCode}\n")
+        try:
+            self._running_sids.discard(int(sid))
+            self.table.viewport().update()
+        except Exception:
+            pass
         # Reload tree while preserving the selection for the finished script
         self.reload_tree()
         if sid is not None and sid >= 0:
@@ -461,6 +472,12 @@ class MainWindow(QMainWindow):
         regex = QRegularExpression(QRegularExpression.escape(text))
         regex.setPatternOptions(QRegularExpression.PatternOption.CaseInsensitiveOption)
         self.proxy.setFilterRegularExpression(regex)
+
+    def is_script_running(self, sid: int) -> bool:
+        try:
+            return int(sid) in self._running_sids
+        except Exception:
+            return False
 
     def _wrap_tooltip_text(self, text: str, width: int = 60) -> str:
         if not text:
@@ -651,6 +668,16 @@ class MainWindow(QMainWindow):
         wd = self.details.get_working_dir()
         self.details.save_current_values()
         self.runner.run(int(sid), path, args=args, python_executable=pyexe, working_dir=wd)
+
+    def _stop_current_run(self):
+        sid = getattr(self.details, 'current_sid', None)
+        if sid is None:
+            QMessageBox.information(self, "情報", "停止対象のスクリプトが未選択です。ダブルクリックで選択してください。")
+            return
+        try:
+            self.runner.kill_sid(int(sid))
+        except Exception:
+            pass
 
     def _on_new_folder_top(self):
         # Create a new folder under the currently selected folder (or root if none)
@@ -874,6 +901,58 @@ class WrappingItemDelegate(QStyledItemDelegate):
         h = int(doc.size().height()) + 6
         return QSize(base.width(), max(base.height(), h))
 
+
+class RunningIndicatorDelegate(QStyledItemDelegate):
+    def __init__(self, window, parent=None):
+        super().__init__(parent)
+        self.window = window
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        style = opt.widget.style() if opt.widget else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
+
+        # Only decorate script items in column 0
+        if index.column() != 0:
+            return
+        try:
+            ntype = index.data(ROLE_NODE_TYPE)
+            if ntype != 'script':
+                return
+            sid_raw = index.data(ROLE_NODE_ID)
+            sid = int(sid_raw)
+        except Exception:
+            return
+        try:
+            if not hasattr(self.window, 'is_script_running') or not self.window.is_script_running(sid):
+                return
+        except Exception:
+            return
+        # Draw a small blue dot near the text rect (left side)
+        painter.save()
+        try:
+            painter.setRenderHint(painter.RenderHint.Antialiasing, True)
+        except Exception:
+            pass
+        try:
+            painter.setBrush(QColor(0, 122, 255))
+            painter.setPen(Qt.PenStyle.NoPen)
+        except Exception:
+            pass
+        try:
+            text_rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, opt, opt.widget)
+        except Exception:
+            text_rect = opt.rect
+        d = 8
+        x = text_rect.left() - d - 4
+        if x < opt.rect.left() + 2:
+            x = opt.rect.left() + 2
+        y = int(text_rect.center().y() - d / 2)
+        try:
+            painter.drawEllipse(int(x), int(y), int(d), int(d))
+        finally:
+            painter.restore()
 
 class RecursiveFilterProxyModel(QSortFilterProxyModel):
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
