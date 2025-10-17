@@ -124,6 +124,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.split_main)
 
         # Runner
+        self._logs_by_sid: dict[int, str] = {}
+        self._display_sid: int | None = None
         self.runner = ScriptRunner(self)
         self.runner.started.connect(self.on_started)
         self.runner.stdout.connect(self._append_log)
@@ -328,7 +330,8 @@ class MainWindow(QMainWindow):
             return
         sid = int(item.data(ROLE_NODE_ID))
         path = item.data(ROLE_PATH)
-        self.log.clear()
+        # Clear only the target script's log buffer (and view if displaying it)
+        self._clear_log_for_sid(int(sid))
         args = self.details.build_args()
         pyexe = self.details.get_python_executable()
         wd = self.details.get_working_dir()
@@ -336,25 +339,46 @@ class MainWindow(QMainWindow):
         self.runner.run(sid, path, args=args, python_executable=pyexe, working_dir=wd)
 
     def on_started(self, sid: int, cmdline: str):
-        self.log.append(f"[RUN] {cmdline}\n")
+        self._append_log(sid, f"[RUN] {cmdline}\n")
 
     def on_finished(self, sid: int, exitCode: int):
-        self.log.append(f"\n[EXIT] code={exitCode}\n")
+        self._append_log(sid, f"\n[EXIT] code={exitCode}\n")
         # Reload tree while preserving the selection for the finished script
         self.reload_tree()
         if sid is not None and sid >= 0:
             self._select_by_id(sid)
 
-    def _append_log(self, s: str):
+    def _append_log(self, sid: int, s: str):
+        # Append to per-script buffer first
+        prev = self._logs_by_sid.get(int(sid), "")
+        self._logs_by_sid[int(sid)] = prev + (s or "")
+        # If this script is currently displayed, mirror to the view
+        if self._display_sid is not None and int(sid) == int(self._display_sid):
+            try:
+                self.log.moveCursor(QTextCursor.MoveOperation.End)
+                self.log.insertPlainText(s)
+                self.log.moveCursor(QTextCursor.MoveOperation.End)
+            except Exception:
+                try:
+                    self.log.insertPlainText(s)
+                except Exception:
+                    pass
+
+    def _set_display_sid(self, sid: int | None):
+        self._display_sid = int(sid) if sid is not None else None
+        # Update the view to show the selected script's buffer
+        text = self._logs_by_sid.get(int(sid), "") if sid is not None else ""
         try:
-            # Insert and keep view pinned to the bottom for real-time logs
-            self.log.moveCursor(QTextCursor.MoveOperation.End)
-            self.log.insertPlainText(s)
+            self.log.setPlainText(text)
             self.log.moveCursor(QTextCursor.MoveOperation.End)
         except Exception:
-            # Fallback
+            pass
+
+    def _clear_log_for_sid(self, sid: int):
+        self._logs_by_sid[int(sid)] = ""
+        if self._display_sid is not None and int(self._display_sid) == int(sid):
             try:
-                self.log.insertPlainText(s)
+                self.log.clear()
             except Exception:
                 pass
 
@@ -510,6 +534,10 @@ class MainWindow(QMainWindow):
                 self.code_preview.set_script(sid, path)
             except Exception:
                 pass
+            try:
+                self._set_display_sid(int(sid))
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -583,7 +611,7 @@ class MainWindow(QMainWindow):
                 except Exception:
                     return
                 path = item.data(ROLE_PATH)
-                self.log.clear()
+                self._clear_log_for_sid(int(sid))
                 args = self.details.build_args()
                 pyexe = self.details.get_python_executable()
                 wd = self.details.get_working_dir()
@@ -617,7 +645,7 @@ class MainWindow(QMainWindow):
         if sid is None or not path:
             QMessageBox.information(self, "情報", "スクリプトが選択されていません（ダブルクリックで選択）")
             return
-        self.log.clear()
+        self._clear_log_for_sid(int(sid))
         args = self.details.build_args()
         pyexe = self.details.get_python_executable()
         wd = self.details.get_working_dir()

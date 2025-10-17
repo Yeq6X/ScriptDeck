@@ -6,8 +6,8 @@ from db import bump_run
 
 class ScriptRunner(QObject):
     started = pyqtSignal(int, str)     # sid, cmdline
-    stdout = pyqtSignal(str)
-    stderr = pyqtSignal(str)
+    stdout = pyqtSignal(int, str)      # sid, chunk
+    stderr = pyqtSignal(int, str)      # sid, chunk
     finished = pyqtSignal(int, int)    # sid, exitCode
 
     def __init__(self, parent=None):
@@ -38,10 +38,10 @@ class ScriptRunner(QObject):
         self.proc.setWorkingDirectory(wd)
 
         self.proc.readyReadStandardOutput.connect(
-            lambda: self.stdout.emit(bytes(self.proc.readAllStandardOutput()).decode("utf-8", errors="ignore"))
+            lambda: self.stdout.emit(self.current_sid or -1, bytes(self.proc.readAllStandardOutput()).decode("utf-8", errors="ignore"))
         )
         self.proc.readyReadStandardError.connect(
-            lambda: self.stderr.emit(bytes(self.proc.readAllStandardError()).decode("utf-8", errors="ignore"))
+            lambda: self.stderr.emit(self.current_sid or -1, bytes(self.proc.readAllStandardError()).decode("utf-8", errors="ignore"))
         )
         self.proc.finished.connect(self._on_finished)
 
